@@ -134,7 +134,7 @@ export default function SessionDetailPage() {
   useEffect(() => {
     if (id && agent) {
       // 1. Fetch Session Metadata (for tokens/insights)
-      fetch(`http://localhost:8000/sessions`)
+      fetch(`http://127.0.0.1:8000/sessions`)
         .then(res => res.json())
         .then(data => {
            const info = data.find((s: any) => s.id === id);
@@ -142,7 +142,7 @@ export default function SessionDetailPage() {
         });
 
       // 2. Fetch Detailed Trace
-      fetch(`http://localhost:8000/sessions/${id}?agent=${agent}`)
+      fetch(`http://127.0.0.1:8000/sessions/${id}?agent=${agent}`)
         .then((res) => res.json())
         .then((data) => {
           let evts = [];
@@ -294,7 +294,7 @@ export default function SessionDetailPage() {
   useEffect(() => {
     const cwd = events.find((e) => e.type === "session_meta")?.payload?.cwd || sessionInfo?.project;
     if (!cwd) return;
-    fetch(`http://localhost:8000/config?project=${encodeURIComponent(cwd)}`)
+    fetch(`http://127.0.0.1:8000/config?project=${encodeURIComponent(cwd)}`)
       .then((r) => r.json())
       .then(setProjectConfig)
       .catch(() => {});
@@ -895,7 +895,7 @@ function ArtifactsPanel({ artifacts }: { artifacts: Artifact[] }) {
                   <span className="text-[10px] font-mono text-slate-300 truncate" title={a.name}>{a.name}</span>
                </div>
                <a 
-                 href={`http://localhost:8000/artifacts?path=${encodeURIComponent(a.path)}`} 
+                 href={`http://127.0.0.1:8000/artifacts?path=${encodeURIComponent(a.path)}`} 
                  download={a.name}
                  className="text-[8px] font-black uppercase text-slate-500 hover:text-white transition-colors"
                >
@@ -906,13 +906,13 @@ function ArtifactsPanel({ artifacts }: { artifacts: Artifact[] }) {
             <div className="p-3">
                {a.type === 'video' && (
                  <video controls className="w-full rounded-lg shadow-inner bg-black aspect-video">
-                   <source src={`http://localhost:8000/artifacts?path=${encodeURIComponent(a.path)}`} type="video/mp4" />
+                   <source src={`http://127.0.0.1:8000/artifacts?path=${encodeURIComponent(a.path)}`} type="video/mp4" />
                    Your browser does not support the video tag.
                  </video>
                )}
                {a.type === 'image' && (
                  <img 
-                    src={`http://localhost:8000/artifacts?path=${encodeURIComponent(a.path)}`} 
+                    src={`http://127.0.0.1:8000/artifacts?path=${encodeURIComponent(a.path)}`} 
                     alt={a.name} 
                     className="w-full rounded-lg shadow-inner bg-slate-950" 
                  />
@@ -935,7 +935,7 @@ function ArtifactViewer({ path }: { path: string }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch(`http://localhost:8000/artifacts?path=${encodeURIComponent(path)}`)
+    fetch(`http://127.0.0.1:8000/artifacts?path=${encodeURIComponent(path)}`)
       .then(res => res.text())
       .then(t => {
         setContent(t);
