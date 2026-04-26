@@ -277,10 +277,11 @@ def _scan_sessions_sync():
         codex_file_map = {}
         try:
             for f in (CODEX_DIR / "sessions").rglob("rollout-*.jsonl"):
-                # Extract SID from rollout-XYZ-SID.jsonl
+                # stem: rollout-2025-10-21T16-55-35-019a0684-74e3-7423-af75-41c73aab7d68
+                # sid: 019a0684-74e3-7423-af75-41c73aab7d68
                 parts = f.stem.split("-")
-                if len(parts) >= 2:
-                    sid = parts[-1]
+                if len(parts) >= 6:
+                    sid = "-".join(parts[-5:])
                     codex_file_map[sid] = f
         except: pass
 
@@ -296,7 +297,8 @@ def _scan_sessions_sync():
                     except: continue
         except: pass
         
-        for sid, sess in list(codex_sessions.items())[:100]:
+        # Process the 100 most recent sessions
+        for sid, sess in list(codex_sessions.items())[-100:]:
             rollout_file = codex_file_map.get(sid)
             if rollout_file:
                 try:
