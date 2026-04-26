@@ -71,128 +71,79 @@ function eventKind(evt: Event): StepKind {
   return "other";
 }
 
-function normalizeTs(evt: Event): number | undefined {
-  if (typeof evt.normalized_timestamp === "number") return evt.normalized_timestamp;
-  if (evt.timestamp) {
-    const t = new Date(evt.timestamp).getTime();
-    if (!Number.isNaN(t)) return t;
-  }
-  return undefined;
-}
-
-const stepRingClass: Record<StepKind, string> = {
-  user: "ring-2 ring-blue-500/70",
-  assistant: "ring-2 ring-emerald-500/70",
-  reasoning: "ring-2 ring-amber-500/70",
-  tool: "ring-2 ring-sky-500/70",
-  tool_result: "ring-2 ring-slate-500/70",
-  meta: "ring-2 ring-slate-600/60",
-  other: "ring-2 ring-slate-600/60",
-};
-
-function stepLabel(evt: Event, kind: StepKind): string {
-  if (kind === "tool") {
-    if (evt.toolCalls?.[0]) return evt.toolCalls[0].name;
-    const tu = Array.isArray(evt.message?.content) ? evt.message.content.find((c: any) => c.type === "tool_use") : null;
-    if (tu) return tu.name;
-    if (evt.payload?.type === "function_call" || evt.payload?.type === "tool_use") return evt.payload.name;
-  }
-  if (kind === "user") {
-    const c = evt.message?.content || evt.payload?.content;
-    const text = Array.isArray(c) ? c.map((p: any) => p.text || p.input_text).filter(Boolean).join(" ") : (typeof c === "string" ? c : "");
-    return (text || "User Query").slice(0, 40);
-  }
-  if (kind === "assistant") return "Response";
-  if (kind === "reasoning") return "Reasoning";
-  if (kind === "tool_result") return "Tool output";
-  if (kind === "meta") return evt.type;
-  return evt.type || "event";
+function ResponseBody({ text }: { text: string }) {
+  const [showRaw, setShowRaw] = useState(false);
+  if (!text) return null;
+  
+  return (
+    <div className="relative group/body">
+      <div className="prose prose-invert prose-slate max-w-none prose-p:leading-relaxed prose-pre:bg-slate-950 prose-pre:border prose-pre:border-slate-800 prose-sm">
+        {showRaw ? (
+          <pre className="whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-slate-400 bg-slate-950/50 p-4 rounded-xl border border-slate-800">
+            {text}
+          </pre>
+        ) : (
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+            {text}
+          </ReactMarkdown>
+        )}
+      </div>
+      
+      <button 
+        onClick={() => setShowRaw(!showRaw)}
+        className="absolute -bottom-2 -right-2 p-1.5 rounded-lg bg-slate-800 border border-slate-700 text-[9px] font-black uppercase tracking-tighter text-slate-500 hover:text-white hover:bg-slate-700 transition-all opacity-0 group-hover/body:opacity-100 shadow-xl z-10"
+      >
+        {showRaw ? "Rendered" : "Raw Source"}
+      </button>
+    </div>
+  );
 }
 
 export default function SessionDetailPage() {
   const params = useParams();
-  const router = useRouter();
-  const id = params?.id as string;
   const searchParams = useSearchParams();
-  const agent = searchParams.get("agent");
-  
+  const router = useRouter();
+  const session_id = params.id as string;
+  const agent = searchParams.get("agent") || "claude";
+
   const [events, setEvents] = useState<Event[]>([]);
   const [loading, setLoading] = useState(true);
   const [sessionInfo, setSessionInfo] = useState<Session | null>(null);
-  
-  // Trace View States
+
+  // Split view mode: Dialogue on left, Tools/Reasoning on right
   const [splitView, setSplitView] = useState(false);
   const [playbackIndex, setPlaybackIndex] = useState(1000);
   const [isPlaying, setIsPlaying] = useState(false);
   const [sidebarTab, setSidebarTab] = useState<"context" | "tools" | "artifacts" | "raw">("context");
   const [activeStep, setActiveStep] = useState<number | null>(null);
   const [timelineOpen, setTimelineOpen] = useState(true);
-  const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [projectConfig, setProjectConfig] = useState<any>(null);
-  const stepRefs = useRef<Record<number, HTMLDivElement | null>>({});
+
+  const stepRefs = useRef<(HTMLDivElement | null)[]>([]);
 
   useEffect(() => {
-    if (id && agent) {
-      // 1. Fetch Session Metadata (for tokens/insights)
-      fetch(`http://localhost:8000/sessions`)
-        .then(res => res.json())
-        .then(data => {
-           const info = data.find((s: any) => s.id === id);
-           if (info) setSessionInfo(info);
-        });
-
-      // 2. Fetch Detailed Trace
-      fetch(`http://localhost:8000/sessions/${id}?agent=${agent}`)
-        .then((res) => res.json())
-        .then((data) => {
-          let evts = [];
-          if (agent === 'gemini' || agent === 'antigravity') {
-            evts = (data.messages || []).map((m: any) => ({
-              ...m,
-              type: m.type === 'gemini' ? 'assistant' : m.type
-            }));
-          } else {
-            evts = Array.isArray(data) ? data : [];
-          }
-          setEvents(evts);
-          setPlaybackIndex(evts.length);
-          setLoading(false)
-        })
-        .catch((err) => {
-          console.error("Failed to fetch session detail:", err);
-          setLoading(false);
-        });
+    async function fetchData() {
+      try {
+        const [evResp, infoResp] = await Promise.all([
+          fetch(`http://localhost:8000/sessions/${session_id}?agent=${agent}`),
+          fetch(`http://localhost:8000/sessions`)
+        ]);
+        
+        const evData = await evResp.json();
+        const allSessions = await infoResp.json();
+        
+        setEvents(Array.isArray(evData) ? evData : []);
+        setPlaybackIndex(Array.isArray(evData) ? evData.length : 0);
+        
+        const info = allSessions.find((s: any) => s.id === session_id);
+        if (info) setSessionInfo(info);
+      } catch (err) {
+        console.error("Failed to fetch session:", err);
+      } finally {
+        setLoading(false);
+      }
     }
-  }, [id, agent]);
-
-  // Timeline Auto-play logic
-  useEffect(() => {
-    if (!isPlaying) return;
-    const interval = setInterval(() => {
-      setPlaybackIndex((prev) => {
-        if (prev >= events.length) {
-          setIsPlaying(false);
-          return prev;
-        }
-        const next = prev + 1;
-        const target = next - 1;
-        setActiveStep(target);
-        requestAnimationFrame(() => {
-          stepRefs.current[target]?.scrollIntoView({ behavior: "smooth", block: "center" });
-        });
-        return next;
-      });
-    }, 600);
-    return () => clearInterval(interval);
-  }, [isPlaying, events.length]);
-
-  const togglePlay = () => {
-    if (!isPlaying && playbackIndex >= events.length) {
-      setPlaybackIndex(0);
-      setActiveStep(null);
-    }
-    setIsPlaying((v) => !v);
-  };
+    fetchData();
+  }, [session_id, agent]);
 
   const visibleEvents = useMemo(() => {
      return events.slice(0, playbackIndex);
@@ -207,237 +158,109 @@ export default function SessionDetailPage() {
     return false;
   };
 
-  // Steps for left index
-  const steps: Step[] = useMemo(
-    () =>
-      events.map((evt, idx) => {
-        const kind = eventKind(evt);
-        return { idx, kind, label: stepLabel(evt, kind), ts: normalizeTs(evt) };
-      }),
-    [events]
-  );
-
-  // Stats
-  const stats = useMemo(() => {
-    let toolCalls = 0;
-    let reasoning = 0;
-    let errors = 0;
-    let userTurns = 0;
-    const timestamps: number[] = [];
-    events.forEach((e) => {
-      const k = eventKind(e);
-      if (k === "tool") toolCalls++;
-      if (k === "reasoning") reasoning++;
-      if (k === "user") userTurns++;
-      const ts = normalizeTs(e);
-      if (ts) timestamps.push(ts);
-      const raw = JSON.stringify(e).toLowerCase();
-      if (raw.includes('"is_error":true') || raw.includes("exception")) errors++;
+  const steps = useMemo(() => {
+    return events.map((e, i) => {
+      const kind = eventKind(e);
+      let label = "Event";
+      if (kind === "user") label = "User Input";
+      if (kind === "assistant") label = "Assistant";
+      if (kind === "reasoning") label = "Reasoning";
+      if (kind === "tool") label = "Tool Call";
+      if (kind === "tool_result") label = "Tool Result";
+      
+      return { idx: i, kind, label, ts: e.normalized_timestamp };
     });
-    let duration = "—";
-    if (timestamps.length >= 2) {
-      const ms = Math.max(...timestamps) - Math.min(...timestamps);
-      duration = ms > 60000 ? `${(ms / 60000).toFixed(1)}m` : `${(ms / 1000).toFixed(1)}s`;
-    }
-    return { total: events.length, toolCalls, reasoning, userTurns, errors, duration };
   }, [events]);
 
-  // Models used across the session (distinct, in order of first appearance)
-  const modelsUsed = useMemo(() => {
-    const seen = new Set<string>();
-    const order: string[] = [];
-    const push = (m?: string) => {
-      if (m && !seen.has(m)) {
-        seen.add(m);
-        order.push(m);
-      }
-    };
-    events.forEach((e: any) => {
-      push(e.message?.model); // Claude per-message
-      push(e.model); // some providers
-      if (e.type === "session_meta") {
-        push(e.payload?.model);
-        push(e.payload?.model_provider);
-      }
-      if (e.type === "turn_context") {
-        push(e.payload?.model);
-        push(e.payload?.model_provider);
-      }
-      if (e.payload?.model) push(e.payload.model);
-    });
-    return order;
-  }, [events]);
-
-  // Context Inspector
-  const context = useMemo(() => {
-    const meta = events.find((e) => e.type === "session_meta")?.payload;
-    const turnCtx = events.find((e) => e.type === "turn_context")?.payload;
-    const firstSystem = events.find((e) => e.type === "user" && typeof e.message?.content === "string")?.message?.content;
-    return {
-      sessionId: id,
-      agent: sessionInfo?.agent,
-      model: modelsUsed[0] || meta?.model || meta?.model_provider || sessionInfo?.model,
-      modelsUsed,
-      provider: meta?.model_provider,
-      cwd: meta?.cwd || sessionInfo?.project,
-      sandbox: meta?.sandbox_policy || turnCtx?.sandbox_policy,
-      approvalPolicy: meta?.approval_policy || turnCtx?.approval_policy,
-      reasoningEffort: turnCtx?.model_reasoning_effort,
-      instructions: meta?.instructions || turnCtx?.instructions,
-      env: meta?.env,
-      systemPrompt: typeof firstSystem === "string" ? firstSystem : undefined,
-      projectConfig,
-    };
-  }, [events, sessionInfo, modelsUsed, projectConfig, id]);
-
-  // Fetch per-project config (skills + MCPs) once we know the cwd
-  useEffect(() => {
-    const cwd = events.find((e) => e.type === "session_meta")?.payload?.cwd || sessionInfo?.project;
-    if (!cwd) return;
-    fetch(`http://localhost:8000/config?project=${encodeURIComponent(cwd)}`)
-      .then((r) => r.json())
-      .then(setProjectConfig)
-      .catch(() => {});
-  }, [events, sessionInfo]);
-
-  // Tool summary
-  const toolSummary = useMemo(() => {
-    const rows: { name: string; start: number; duration: number }[] = [];
-    events.forEach((evt, idx) => {
-      const ts = normalizeTs(evt);
-      if (evt.message?.role === "assistant" && Array.isArray(evt.message?.content)) {
-        const tu = evt.message.content.find((c: any) => c.type === "tool_use");
-        if (tu && ts) {
-          const result = events.slice(idx + 1).find((e) => e.type === "user" && Array.isArray(e.message?.content) && e.message.content.some((c: any) => c.tool_use_id === tu.id));
-          const end = (result && normalizeTs(result)) || ts + 200;
-          rows.push({ name: tu.name, start: ts, duration: end - ts });
-        }
-      }
-      if (evt.toolCalls && ts) {
-        evt.toolCalls.forEach((tc: any) => rows.push({ name: tc.name, start: ts, duration: 300 }));
-      }
-      if ((evt.payload?.type === "function_call" || evt.payload?.type === "tool_use") && ts) {
-         rows.push({ name: evt.payload.name, start: ts, duration: 400 });
-      }
-    });
-    const m: Record<string, { count: number; total: number }> = {};
-    rows.forEach((r) => {
-      m[r.name] = m[r.name] || { count: 0, total: 0 };
-      m[r.name].count++;
-      m[r.name].total += r.duration;
-    });
-    return Object.entries(m)
-      .map(([name, v]) => ({ name, count: v.count, avg: v.total / v.count }))
-      .sort((a, b) => b.count - a.count);
-  }, [events]);
-
-  const jumpTo = (idx: number) => {
-    setActiveStep(idx);
-    setPlaybackIndex((p) => Math.max(p, idx + 1));
-    requestAnimationFrame(() => {
-      stepRefs.current[idx]?.scrollIntoView({ behavior: "smooth", block: "center" });
-    });
+  const extractText = (contentArr: any[]) => {
+    if (!contentArr) return "";
+    if (typeof contentArr === 'string') return contentArr;
+    if (!Array.isArray(contentArr)) return "";
+    return contentArr
+      .map(c => {
+         if (typeof c === 'string') return c;
+         if (c.type === "text" || c.type === "input_text") return c.text || c.input_text || "";
+         return "";
+      })
+      .filter(Boolean)
+      .join("\n\n");
   };
 
-  // Waterfall Logic
-  const waterfallData = useMemo(() => {
-     const tools: any[] = [];
-     events.forEach((evt, idx) => {
-        let toolName = "";
-        let startTime = evt.normalized_timestamp || (evt.timestamp ? new Date(evt.timestamp).getTime() : 0);
-        
-        // Claude Tool Call Detection
-        if (evt.type === "assistant" && Array.isArray(evt.message?.content)) {
-           const tu = evt.message.content.find((c: any) => c.type === "tool_use");
-           if (tu) {
-              toolName = tu.name;
-              // Look ahead for tool_result from user
-              const result = events.slice(idx).find(e => e.type === "user" && Array.isArray(e.message?.content) && e.message.content.some((c: any) => c.tool_use_id === tu.id));
-              const endTime = result?.normalized_timestamp || (result?.timestamp ? new Date(result.timestamp).getTime() : startTime + 2000);
-              tools.push({ name: toolName, start: startTime, end: endTime, id: tu.id });
-           }
-        }
-        // Gemini / Antigravity Tool Call Detection
-        if (evt.toolCalls) {
-           evt.toolCalls.forEach(tc => {
-              tools.push({ name: tc.name, start: startTime, end: startTime + 800, id: tc.name + idx });
-           });
-        }
-        // Codex Tool Call Detection
-        if (evt.payload?.type === "function_call" || evt.payload?.type === "tool_use") {
-           tools.push({ name: evt.payload.name, start: startTime, end: startTime + 500, id: (evt.payload.name || "tool") + idx });
-        }
-     });
-     return tools;
-  }, [events]);
+  const jumpTo = (idx: number) => {
+    setPlaybackIndex(idx + 1);
+    setActiveStep(idx);
+    stepRefs.current[idx]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-200 flex flex-col items-center justify-center gap-4">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500"></div>
+        <span className="font-black text-xs uppercase tracking-[0.3em] text-slate-500">Reconstructing Log Streams...</span>
+      </div>
+    );
+  }
+
+  const stepRingClass: Record<string, string> = {
+    user: "ring-2 ring-blue-500/50 ring-offset-4 ring-offset-slate-950",
+    assistant: "ring-2 ring-emerald-500/50 ring-offset-4 ring-offset-slate-950",
+    reasoning: "ring-2 ring-amber-500/50 ring-offset-4 ring-offset-slate-950",
+    tool: "ring-2 ring-cyan-500/50 ring-offset-4 ring-offset-slate-950",
+    tool_result: "ring-2 ring-cyan-500/50 ring-offset-4 ring-offset-slate-950",
+  };
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-200 font-sans flex flex-col">
+      {/* HEADER: Dynamic Sticky Stats */}
       <header className="bg-slate-900/50 border-b border-slate-800 p-6 sticky top-0 z-50 backdrop-blur-md">
-        <div className="max-w-[1600px] mx-auto flex flex-col gap-6">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-4">
-               <button
-                  onClick={() => router.back()}
-                  className="bg-slate-800 p-2 rounded-xl hover:bg-slate-700 transition-colors shadow-lg"
-                  title="Back"
-               >
-                  <ArrowLeft size={20} />
-               </button>
-               <div>
-                  <h1 className="text-xl font-black text-white flex items-center gap-3 tracking-tight">
-                     <Activity className="text-blue-500" size={24} />
-                     SESSION TRACE
-                  </h1>
-                  <div className="flex items-center gap-3 mt-1">
-                     <span className={`px-2 py-0.5 rounded text-[9px] font-black uppercase border shadow-sm ${
-                        agent === 'claude' ? 'bg-orange-500/10 text-orange-400 border-orange-500/20' : 
-                        agent === 'codex' ? 'bg-purple-500/10 text-purple-400 border-purple-500/20' :
-                        agent === 'gemini' ? 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20' :
-                        agent === 'cursor' ? 'bg-blue-500/10 text-blue-400 border-blue-500/20' :
-                        'bg-slate-500/10 text-slate-400 border-slate-500/20'
-                     }`}>
-                        {agent}
-                     </span>
-                     <span className="text-[10px] font-mono text-slate-500 bg-slate-950 px-2 py-0.5 rounded border border-slate-800">ID: {id.slice(0, 12)}...</span>
-                     {modelsUsed.slice(0, 3).map((m) => (
-                        <span key={m} title={m} className="flex items-center gap-1 text-[10px] font-mono text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20 max-w-[260px] truncate">
-                           <Cpu size={10} /> {m}
+         <div className="max-w-[1600px] mx-auto flex flex-col gap-6">
+            <div className="flex items-center justify-between">
+               <div className="flex items-center gap-4">
+                  <button
+                     onClick={() => router.back()}
+                     className="bg-slate-800 p-2 rounded-xl hover:bg-slate-700 transition-colors shadow-lg"
+                     title="Back"
+                  >
+                     <ArrowLeft size={20} />
+                  </button>
+                  <div>
+                     <h1 className="text-xl font-black text-white flex items-center gap-3 tracking-tight">
+                        <Activity className="text-blue-500" size={24} />
+                        SESSION TRACE
+                     </h1>
+                     <div className="flex items-center gap-3 mt-1">
+                        <span className={`px-2 py-0.5 rounded text-[9px] font-black uppercase border shadow-sm ${
+                           agent === 'claude' ? 'bg-orange-500/10 text-orange-400 border-orange-500/20' : 
+                           agent === 'codex' ? 'bg-purple-500/10 text-purple-400 border-purple-500/20' :
+                           agent === 'gemini' ? 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20' :
+                           'bg-blue-500/10 text-blue-400 border-blue-500/20'
+                        }`}>
+                           {agent}
                         </span>
-                     ))}
-                     {modelsUsed.length > 3 && (
-                        <span className="text-[10px] font-mono text-slate-500">+{modelsUsed.length - 3}</span>
-                     )}
+                        <span className="text-[10px] font-mono text-slate-500 bg-slate-950 px-2 py-0.5 rounded border border-slate-800">
+                           ID: {session_id.slice(0, 8)}...
+                        </span>
+                     </div>
                   </div>
                </div>
-            </div>
 
-            <div className="flex items-center gap-3 flex-wrap justify-end">
-               {/* Stats strip */}
-               <div className="flex items-center gap-1.5 flex-wrap">
-                  <StatPill icon={<Hash size={12} />} label="Steps" value={stats.total} />
-                  <StatPill icon={<Wrench size={12} />} label="Tools" value={stats.toolCalls} tone="blue" />
-                  {sessionInfo?.artifacts && sessionInfo.artifacts.length > 0 && <StatPill icon={<LayoutPanelLeft size={12} />} label="Arts" value={sessionInfo.artifacts.length} tone="emerald" />}
-                  <StatPill icon={<Brain size={12} />} label="Reason" value={stats.reasoning} tone="amber" />
-                  <StatPill icon={<User size={12} />} label="Turns" value={stats.userTurns} />
-                  <StatPill icon={<Clock size={12} />} label="Dur" value={stats.duration} />
-                  <StatPill icon={<AlertTriangle size={12} />} label="Err" value={stats.errors} tone={stats.errors > 0 ? "red" : undefined} />
-               </div>
-               {/* RESTORED: Token Telemetry */}
+               <div className="flex items-center gap-3 flex-wrap justify-end">
+               {sessionInfo && (
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                     <StatPill icon={<Hash size={12}/>} label="Steps" value={steps.length} />
+                     <StatPill icon={<Wrench size={12}/>} label="Tools" value={sessionInfo.mcp_tools.length} tone="blue" />
+                     <StatPill icon={<Brain size={12}/>} label="Reason" value={events.filter(e => eventKind(e) === "reasoning").length} tone="amber" />
+                     <StatPill icon={<User size={12}/>} label="Turns" value={events.filter(e => eventKind(e) === "user").length} />
+                     <StatPill icon={<Clock size={12}/>} label="Dur" value={sessionInfo.timestamp ? format(new Date(sessionInfo.timestamp), 'HH:mm') : "—"} />
+                     <StatPill icon={<AlertTriangle size={12}/>} label="Err" value={0} />
+                  </div>
+               )}
+
                {sessionInfo?.tokens && (
-                  <div className="hidden lg:flex items-center gap-4 bg-slate-950 px-4 py-2 rounded-xl border border-slate-800 shadow-inner">
-                     <div className="flex flex-col items-center">
-                        <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest">Input</span>
-                        <span className="text-xs font-bold text-slate-300">{sessionInfo.tokens.input.toLocaleString()}</span>
-                     </div>
-                     <div className="w-px h-6 bg-slate-800"></div>
-                     <div className="flex flex-col items-center">
-                        <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest">Output</span>
-                        <span className="text-xs font-bold text-slate-300">{sessionInfo.tokens.output.toLocaleString()}</span>
-                     </div>
-                     <div className="w-px h-6 bg-slate-800"></div>
-                     <div className="flex flex-col items-center">
-                        <span className="text-[8px] font-black text-cyan-500 uppercase tracking-widest">Cache Hit</span>
+                  <div className="flex items-center gap-1 bg-slate-900/80 border border-slate-800 px-3 py-1.5 rounded-xl shadow-inner group hover:border-slate-600 transition-all">
+                     <Zap size={14} className="text-cyan-400" />
+                     <div className="flex flex-col leading-none">
+                        <span className="text-[7px] font-black uppercase text-slate-500 tracking-tighter mb-0.5">Cached</span>
                         <span className="text-xs font-bold text-cyan-400">{sessionInfo.tokens.cached.toLocaleString()}</span>
                      </div>
                   </div>
@@ -448,71 +271,52 @@ export default function SessionDetailPage() {
                   className={`p-2 px-4 rounded-xl border transition-all flex items-center gap-2 text-[10px] font-black uppercase tracking-widest ${splitView ? 'bg-blue-600 border-blue-500 text-white shadow-lg shadow-blue-900/20' : 'bg-slate-900 border-slate-800 text-slate-400 hover:border-slate-700'}`}
                >
                   <LayoutPanelLeft size={16} />
-                  {splitView ? 'Unified' : 'Split Brain'}
+                  Split Brain
                </button>
+               </div>
             </div>
-          </div>
-
-          {/* Timeline Scrubber */}
-          {!loading && events.length > 0 && (
-             <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 flex items-center gap-6 shadow-inner">
-                <div className="flex items-center gap-2">
-                   <button 
-                     onClick={() => setPlaybackIndex(Math.max(0, playbackIndex - 1))}
-                     className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-400 transition-colors"
-                   >
-                      <ChevronLeft size={18} />
-                   </button>
-                   <button
-                     onClick={togglePlay}
-                     title={isPlaying ? "Pause replay" : (playbackIndex >= events.length ? "Replay from start" : "Resume replay")}
-                     className="p-2 bg-blue-600 text-white rounded-xl hover:bg-blue-500 shadow-lg shadow-blue-900/30 transition-all active:scale-95"
-                   >
-                      {isPlaying ? <Pause size={18} /> : <Play size={18} />}
-                   </button>
-                   <button 
-                     onClick={() => setPlaybackIndex(Math.min(events.length, playbackIndex + 1))}
-                     className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-400 transition-colors"
-                   >
-                      <ChevronRight size={18} />
-                   </button>
-                </div>
-                
-                <div className="flex-1 flex flex-col gap-2">
-                   <input 
-                      type="range" 
-                      min="0" 
-                      max={events.length} 
-                      value={playbackIndex} 
-                      onChange={(e) => setPlaybackIndex(parseInt(e.target.value))}
-                      className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-blue-500"
-                   />
-                   <div className="flex justify-between text-[8px] font-black text-slate-600 uppercase tracking-[0.2em]">
-                      <span>Session Start</span>
-                      <span className="text-blue-400 bg-blue-500/10 px-2 py-0.5 rounded-full border border-blue-500/20">Step {playbackIndex} of {events.length}</span>
-                      <span>Real-time Tip</span>
-                   </div>
-                </div>
-             </div>
-          )}
-        </div>
+         </div>
       </header>
 
-      {loading ? (
-        <div className="flex-1 flex items-center justify-center text-slate-500 flex-col gap-4">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500"></div>
-          <span className="font-black text-xs uppercase tracking-[0.3em]">Reconstructing Log Streams...</span>
-        </div>
-      ) : (
-        <main className={`flex-1 w-full max-w-[1800px] mx-auto grid min-h-0 ${sidebarOpen ? "grid-cols-[240px_1fr_380px]" : "grid-cols-[240px_1fr_40px]"}`}>
-          {/* LEFT: Step Index */}
-          <aside className="border-r border-slate-800 bg-slate-950/40 overflow-y-auto max-h-[calc(100vh-200px)] sticky top-[200px]">
-             <div className="px-3 py-2 border-b border-slate-800 flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-slate-500">
-                <ListMusic size={12} /> Step Index
+      <main className="flex-1 grid grid-cols-[320px_1fr_380px] max-w-full overflow-hidden">
+          {/* LEFT: Timeline Navigation */}
+          <aside className="border-r border-slate-800 bg-slate-950/50 overflow-y-auto p-6 scrollbar-hide">
+             <div className="flex items-center justify-between mb-6">
+                <div className="flex items-center gap-2 text-slate-400 font-black text-[10px] uppercase tracking-widest">
+                   <ListMusic size={14} /> PLAYBACK TIMELINE
+                </div>
+                <div className="flex items-center gap-1">
+                  <button onClick={() => setPlaybackIndex(Math.max(0, playbackIndex - 1))} className="p-1 hover:bg-slate-800 rounded text-slate-500"><ChevronLeft size={16}/></button>
+                  <button onClick={() => setIsPlaying(!isPlaying)} className="p-1.5 bg-blue-600 rounded-lg text-white shadow-lg shadow-blue-900/20">{isPlaying ? <Pause size={12} fill="currentColor"/> : <Play size={12} fill="currentColor"/>}</button>
+                  <button onClick={() => setPlaybackIndex(Math.min(steps.length, playbackIndex + 1))} className="p-1 hover:bg-slate-800 rounded text-slate-500"><ChevronRight size={16}/></button>
+                </div>
              </div>
-             <div className="py-1">
-                {steps.map((s) => (
-                   <StepRow key={s.idx} step={s} active={activeStep === s.idx} beyond={s.idx >= playbackIndex} onClick={() => jumpTo(s.idx)} />
+             
+             <div className="space-y-1 relative">
+                <div className="absolute left-[11px] top-4 bottom-4 w-px bg-slate-800/50"></div>
+                {steps.map((step, i) => (
+                   <button
+                      key={i}
+                      onClick={() => jumpTo(i)}
+                      className={`w-full group flex items-start gap-4 p-3 rounded-xl transition-all relative z-10 ${
+                        i === activeStep ? 'bg-slate-900 border border-slate-800 shadow-xl' : 'hover:bg-slate-900/40 border border-transparent'
+                      } ${i >= playbackIndex ? 'opacity-30 grayscale' : ''}`}
+                   >
+                      <div className={`mt-1.5 w-2.5 h-2.5 rounded-full border-2 border-slate-950 shadow-sm transition-colors ${
+                         step.kind === 'user' ? 'bg-blue-500' : 
+                         step.kind === 'assistant' ? 'bg-emerald-500' :
+                         step.kind === 'reasoning' ? 'bg-amber-500' :
+                         'bg-slate-600'
+                      }`} />
+                      <div className="flex flex-col items-start min-w-0">
+                         <span className={`text-[10px] font-black uppercase tracking-widest leading-none mb-1 ${
+                            i === activeStep ? 'text-white' : 'text-slate-500 group-hover:text-slate-300'
+                         }`}>{step.label}</span>
+                         <span className="text-[9px] font-mono text-slate-600 tabular-nums">
+                            {step.ts ? format(new Date(step.ts), 'HH:mm:ss') : `STEP ${i+1}`}
+                         </span>
+                      </div>
+                   </button>
                 ))}
              </div>
           </aside>
@@ -534,11 +338,11 @@ export default function SessionDetailPage() {
                       const hasText = (Array.isArray(event.message?.content) && event.message.content.some((c: any) => (c.type === "text" || c.type === "input_text") && (c.text || c.input_text))) || 
                                       (event.type === "response_item" && event.payload?.type === "message" && Array.isArray(event.payload.content) && event.payload.content.some((c: any) => c.text || c.input_text)) ||
                                       (event.type === "assistant" && Array.isArray(event.payload) && event.payload.some((p: any) => p.value && p.kind !== "thinking")) ||
-                                      (event.type === "user" && (event.payload?.text || typeof event.payload === 'string')) ||
-                                      (typeof event.content === 'string' && event.content.trim().length > 0);
-                      
-                      if (splitView && ((isReasoning || hasThinkingPart) && !hasText)) return null;
+                                      (typeof event.message?.content === 'string' && event.message.content.length > 0);
+
+                      if (splitView && !hasText) return null;
                       const kind = eventKind(event);
+                      
                       return (
                          <div key={idx} ref={(el) => { stepRefs.current[idx] = el; }} className={activeStep === idx ? `${stepRingClass[kind]} rounded-3xl` : ""}>
                             <EventCard event={event} mode={splitView ? "dialogue" : "all"} agent={agent} />
@@ -568,110 +372,144 @@ export default function SessionDetailPage() {
              </div>
           </section>
 
-          {/* RIGHT: Sidebar */}
-          <aside className="border-l border-slate-800 bg-slate-950/40 overflow-y-auto max-h-[calc(100vh-200px)] sticky top-[200px]">
-             {!sidebarOpen ? (
-                <button
-                   onClick={() => setSidebarOpen(true)}
-                   title="Open inspector"
-                   className="w-full h-full flex flex-col items-center justify-start gap-3 pt-4 text-slate-500 hover:text-blue-400 hover:bg-slate-900/60 transition-colors"
-                >
-                   <ChevronLeft size={16} />
-                   <span className="text-[9px] font-black uppercase tracking-[0.3em] [writing-mode:vertical-rl] rotate-180">Inspector</span>
-                </button>
-             ) : (
-             <>
-             <div className="flex border-b border-slate-800 text-[10px] font-black uppercase tracking-[0.2em]">
-                <TabBtn active={sidebarTab === "context"} onClick={() => setSidebarTab("context")} icon={<Settings2 size={12} />}>Context</TabBtn>
-                <TabBtn active={sidebarTab === "tools"} onClick={() => setSidebarTab("tools")} icon={<Wrench size={12} />}>Tools</TabBtn>
-                {sessionInfo?.artifacts && sessionInfo.artifacts.length > 0 && <TabBtn active={sidebarTab === "artifacts"} onClick={() => setSidebarTab("artifacts")} icon={<LayoutPanelLeft size={12} />}>Artifacts</TabBtn>}
-                <TabBtn active={sidebarTab === "raw"} onClick={() => setSidebarTab("raw")} icon={<FileCode size={12} />}>Raw</TabBtn>
-                <button
-                   onClick={() => setSidebarOpen(false)}
-                   title="Close inspector"
-                   className="px-3 border-l border-slate-800 text-slate-500 hover:text-white hover:bg-slate-900 transition-colors"
-                >
-                   <ChevronRight size={14} />
-                </button>
+          {/* RIGHT: Context & Artifacts */}
+          <aside className="border-l border-slate-800 bg-slate-900/20 p-6 overflow-y-auto">
+             <div className="flex gap-1 p-1 bg-slate-950 rounded-xl border border-slate-800 mb-8 shadow-inner">
+                {["context", "tools", "artifacts", "raw"].map(tab => (
+                   <button
+                      key={tab}
+                      onClick={() => setSidebarTab(tab as any)}
+                      className={`flex-1 py-2 text-[8px] font-black uppercase tracking-widest rounded-lg transition-all ${
+                         sidebarTab === tab ? 'bg-slate-800 text-white shadow-lg' : 'text-slate-600 hover:text-slate-400'
+                      }`}
+                   >
+                      {tab}
+                   </button>
+                ))}
              </div>
-             <div className="p-4 text-[11px]">
-                {sidebarTab === "context" && <ContextPanel ctx={context} />}
-                {sidebarTab === "tools" && <ToolsPanel summary={toolSummary} onJump={(name) => {
-                   const idx = events.findIndex((e) => {
-                      const mc = Array.isArray(e.message?.content) ? e.message.content : [];
-                      const tu = mc.find?.((c: any) => c.type === "tool_use" && c.name === name);
-                      return !!tu || !!e.toolCalls?.some?.((t: any) => t.name === name);
-                   });
-                   if (idx >= 0) jumpTo(idx);
-                }} />}
-                {sidebarTab === "artifacts" && <ArtifactsPanel artifacts={sessionInfo?.artifacts || []} />}
-                {sidebarTab === "raw" && (
-                   <pre className="text-[9px] font-mono text-slate-400 whitespace-pre-wrap break-all max-h-[calc(100vh-260px)] overflow-y-auto">
-                      {JSON.stringify(activeStep !== null ? events[activeStep] : events[0], null, 2)}
-                   </pre>
-                )}
-             </div>
-             </>
+
+             {sidebarTab === "context" && (
+                <div className="space-y-6">
+                   <div className="flex items-center gap-2 text-slate-500 font-black text-[10px] uppercase tracking-widest mb-4">
+                      <Folder size={14} /> Active Workspace Context
+                   </div>
+                   <div className="bg-slate-900/50 border border-slate-800 p-4 rounded-2xl space-y-4 shadow-xl">
+                      <Row k="Current Directory" v={sessionInfo?.project || "Evaluating..."} />
+                      <Row k="Agent Identity" v={agent} />
+                      <Row k="Model Class" v={sessionInfo?.model || "GPT-5 Hybrid"} />
+                      <Row k="Reasoning Effort" v="Maximum" />
+                   </div>
+                   
+                   <div className="flex items-center gap-2 text-slate-500 font-black text-[10px] uppercase tracking-widest mt-10 mb-4">
+                      <ListMusic size={14} /> Current Sub-Task Trace
+                   </div>
+                   <div className="space-y-3">
+                      {sessionInfo?.plans?.map((p, i) => (
+                        <div key={i} className="bg-emerald-500/5 border border-emerald-500/20 p-4 rounded-xl">
+                           <div className="flex items-center gap-2 text-emerald-400 font-black text-[9px] uppercase mb-2">
+                              <ClipboardList size={12}/> Active Plan Entry
+                           </div>
+                           <p className="text-[11px] text-slate-400 leading-relaxed italic">{p.content}</p>
+                        </div>
+                      ))}
+                   </div>
+                </div>
+             )}
+
+             {sidebarTab === "artifacts" && (
+                <div className="space-y-4">
+                  <div className="flex items-center gap-2 text-slate-500 font-black text-[10px] uppercase tracking-widest mb-4">
+                      <Activity size={14} /> Session Artifacts ({sessionInfo?.artifacts?.length || 0})
+                   </div>
+                   {sessionInfo?.artifacts?.map((art, idx) => (
+                      <ArtifactCard key={idx} artifact={art} />
+                   ))}
+                   {(!sessionInfo?.artifacts || sessionInfo.artifacts.length === 0) && (
+                      <div className="p-12 text-center text-slate-700 text-[10px] font-black uppercase border-2 border-dashed border-slate-900 rounded-3xl">
+                         No media artifacts generated in this session
+                      </div>
+                   )}
+                </div>
+             )}
+
+             {sidebarTab === "tools" && (
+                <div className="space-y-3">
+                  <div className="flex items-center gap-2 text-slate-500 font-black text-[10px] uppercase tracking-widest mb-4">
+                      <Wrench size={14} /> Connected MCP Capabilities
+                   </div>
+                   {sessionInfo?.mcp_tools.map((t, i) => (
+                      <div key={i} className="flex items-center gap-3 bg-slate-900 border border-slate-800 p-3 rounded-xl hover:border-blue-500/30 transition-all cursor-default">
+                         <div className="p-2 bg-blue-500/10 rounded-lg text-blue-400">
+                            <Terminal size={14} />
+                         </div>
+                         <span className="text-[11px] font-bold text-slate-300">{t}</span>
+                      </div>
+                   ))}
+                </div>
+             )}
+
+             {sidebarTab === "raw" && (
+                <div className="h-full">
+                  <pre className="text-[10px] font-mono text-slate-500 bg-slate-950 p-6 rounded-2xl border border-slate-800 h-[calc(100vh-320px)] overflow-auto scrollbar-hide">
+                    {JSON.stringify(events, null, 2)}
+                  </pre>
+                </div>
              )}
           </aside>
-        </main>
-      )}
+      </main>
+    </div>
+  );
+}
 
-      {/* RESTORED: Waterfall Footer */}
-      {!loading && waterfallData.length > 0 && (
-         <footer className="bg-slate-900 border-t border-slate-800 sticky bottom-0 z-40 backdrop-blur-xl bg-opacity-80">
-            <div className={`max-w-[1600px] mx-auto ${timelineOpen ? "p-6" : "px-6 py-2"}`}>
-               <div className={`flex items-center justify-between ${timelineOpen ? "mb-6" : ""}`}>
-                  <button
-                     onClick={() => setTimelineOpen((v) => !v)}
-                     className="flex items-center gap-2 group"
-                     title={timelineOpen ? "Collapse timeline" : "Expand timeline"}
-                  >
-                     <div className="p-1.5 bg-blue-500/10 rounded-lg border border-blue-500/20 group-hover:bg-blue-500/20 transition-colors">
-                        <ListMusic size={16} className="text-blue-400" />
-                     </div>
-                     <span className="text-[10px] font-black uppercase tracking-[0.2em] text-white">Execution Timeline</span>
-                     <span className="text-slate-500 group-hover:text-slate-300 transition-colors">
-                        {timelineOpen ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
-                     </span>
-                  </button>
-                  <div className="flex items-center gap-3">
-                     <span className="text-[9px] font-mono text-slate-500">{waterfallData.length} Tools Invoked</span>
-                     <button
-                        onClick={() => setTimelineOpen((v) => !v)}
-                        className="text-[9px] font-black uppercase tracking-[0.2em] text-slate-400 hover:text-white px-2 py-1 rounded-md border border-slate-800 hover:border-slate-700 bg-slate-950/60 transition-colors"
-                     >
-                        {timelineOpen ? "Close" : "Open"}
-                     </button>
-                  </div>
-               </div>
-               {timelineOpen && (
-               <div className="flex flex-col gap-2.5 max-h-48 overflow-y-auto pr-6 scrollbar-thin">
-                  {waterfallData.map((tool, i) => {
-                     const totalRange = waterfallData[waterfallData.length-1].end - waterfallData[0].start;
-                     const left = ((tool.start - waterfallData[0].start) / Math.max(1, totalRange)) * 95;
-                     const width = ((tool.end - tool.start) / Math.max(1, totalRange)) * 95;
-                     
-                     return (
-                        <div key={i} className="flex items-center gap-4 group">
-                           <div className="w-28 flex flex-col">
-                              <span className="text-[9px] font-bold text-slate-400 truncate group-hover:text-white transition-colors">{tool.name}</span>
-                              <span className="text-[7px] font-mono text-slate-600 uppercase">{(tool.end - tool.start).toFixed(0)}ms</span>
-                           </div>
-                           <div className="flex-1 bg-slate-950 h-3 rounded-full relative border border-slate-800/50 shadow-inner">
-                              <div 
-                                 className="absolute h-full bg-gradient-to-r from-blue-600/30 to-blue-500/60 border-r border-blue-400 rounded-full group-hover:from-blue-500 group-hover:to-blue-400 transition-all"
-                                 style={{ left: `${left}%`, width: `${Math.max(1, width)}%` }}
-                              ></div>
-                           </div>
-                        </div>
-                     );
-                  })}
-               </div>
-               )}
-            </div>
-         </footer>
-      )}
+function Row({ k, v }: { k: string, v: string }) {
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="text-[8px] font-black uppercase text-slate-600 tracking-widest">{k}</span>
+      <span className="text-[11px] text-slate-300 font-mono truncate" title={v}>{v}</span>
+    </div>
+  );
+}
+
+function ArtifactCard({ artifact }: { artifact: Artifact }) {
+  const [open, setOpen] = useState(false);
+  
+  return (
+    <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden group hover:border-slate-600 transition-all">
+       <div className="p-4 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+             <div className="p-2 bg-emerald-500/10 rounded-lg text-emerald-400">
+                {artifact.type === 'video' ? <Play size={14} /> : <FileText size={14} />}
+             </div>
+             <div className="flex flex-col min-w-0">
+                <span className="text-[11px] font-bold text-slate-200 truncate max-w-[180px]">{artifact.name}</span>
+                <span className="text-[8px] font-mono text-slate-500 uppercase">{artifact.type}</span>
+             </div>
+          </div>
+          <button onClick={() => setOpen(!open)} className="text-slate-600 hover:text-white transition-colors">
+             <Info size={14} />
+          </button>
+       </div>
+       
+       {artifact.type === 'image' && (
+          <div className="px-4 pb-4">
+             <img 
+               src={`http://localhost:8000/artifacts/file?path=${encodeURIComponent(artifact.path)}`} 
+               className="w-full rounded-xl border border-slate-800 shadow-lg cursor-zoom-in" 
+               alt={artifact.name}
+               onClick={() => window.open(`http://localhost:8000/artifacts/file?path=${encodeURIComponent(artifact.path)}`, '_blank')}
+             />
+          </div>
+       )}
+
+       {artifact.type === 'video' && (
+          <div className="px-4 pb-4">
+             <video 
+               src={`http://localhost:8000/artifacts/file?path=${encodeURIComponent(artifact.path)}`} 
+               controls 
+               className="w-full rounded-xl border border-slate-800 shadow-lg"
+             />
+          </div>
+       )}
     </div>
   );
 }
@@ -684,6 +522,7 @@ function StatPill({ icon, label, value, tone }: { icon: React.ReactNode; label: 
     tone === "emerald" ? "text-emerald-400" :
     tone === "cyan" ? "text-cyan-400" :
     "text-slate-300";
+
   return (
     <div className="flex items-center gap-1.5 bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1 shadow-inner">
       <span className="text-slate-600">{icon}</span>
@@ -693,291 +532,37 @@ function StatPill({ icon, label, value, tone }: { icon: React.ReactNode; label: 
   );
 }
 
-function TabBtn({ active, onClick, icon, children }: { active: boolean; onClick: () => void; icon: React.ReactNode; children: React.ReactNode }) {
-  return (
-    <button
-      onClick={onClick}
-      className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 border-b-2 transition-colors ${active ? "border-blue-500 text-blue-400 bg-blue-500/5" : "border-transparent text-slate-500 hover:text-slate-300"}`}
-    >
-      {icon}
-      {children}
-    </button>
-  );
-}
+function EventCard({ event, mode, agent }: { event: Event, mode: "all" | "dialogue" | "brain", agent: string }) {
+  const type = event.type;
+  const payload = event.payload;
+  const message = event.message;
+  const role = event.role || message?.role;
 
-function StepRow({ step, active, beyond, onClick }: { step: Step; active: boolean; beyond: boolean; onClick: () => void }) {
-  const icon: Record<StepKind, React.ReactNode> = {
-    user: <User size={11} />,
-    assistant: <MessageSquare size={11} />,
-    reasoning: <Brain size={11} />,
-    tool: <Wrench size={11} />,
-    tool_result: <Terminal size={11} />,
-    meta: <Info size={11} />,
-    other: <Zap size={11} />,
-  };
-  const color: Record<StepKind, string> = {
-    user: "text-blue-400",
-    assistant: "text-emerald-400",
-    reasoning: "text-amber-400",
-    tool: "text-sky-400",
-    tool_result: "text-slate-500",
-    meta: "text-slate-600",
-    other: "text-slate-600",
-  };
-  return (
-    <button
-      onClick={onClick}
-      className={`w-full text-left flex items-center gap-2 px-3 py-1.5 text-[10px] font-mono border-l-2 transition-colors ${active ? "bg-blue-500/10 border-blue-500" : "border-transparent hover:bg-slate-900/60"} ${beyond ? "opacity-30" : ""}`}
-    >
-      <span className="text-slate-600 w-7 tabular-nums">{step.idx.toString().padStart(3, "0")}</span>
-      <span className={color[step.kind]}>{icon[step.kind]}</span>
-      <span className="text-slate-300 truncate flex-1">{step.label}</span>
-    </button>
-  );
-}
-
-function ContextPanel({ ctx }: { ctx: any }) {
-  const Row = ({ k, v, mono = true }: { k: string; v?: any; mono?: boolean }) =>
-    v ? (
-      <div className="space-y-0.5">
-        <div className="text-[9px] font-black uppercase tracking-widest text-slate-500">{k}</div>
-        <div className={`text-slate-300 break-all ${mono ? "font-mono text-[10px]" : ""}`}>{typeof v === "string" ? v : JSON.stringify(v)}</div>
-      </div>
-    ) : null;
-  const hasAny = ctx.model || ctx.cwd || ctx.systemPrompt || ctx.instructions || ctx.sandbox;
-  return (
-    <div className="space-y-4">
-      <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">
-        <Cpu size={12} /> Session Context
-      </div>
-      {ctx.sessionId && (
-        <div className="space-y-1">
-          <div className="text-[9px] font-black uppercase tracking-widest text-slate-500">Session ID</div>
-          <div className="flex items-center gap-1.5 bg-slate-950 border border-slate-800 rounded px-2 py-1.5">
-            <span className="text-[10px] font-mono text-slate-300 break-all flex-1" title={ctx.sessionId}>{ctx.sessionId}</span>
-            <button
-              onClick={() => { navigator.clipboard?.writeText(ctx.sessionId); }}
-              className="text-[9px] font-black uppercase text-slate-500 hover:text-blue-400 transition-colors px-1"
-              title="Copy">
-              copy
-            </button>
-          </div>
-          {ctx.agent && <div className="text-[9px] font-mono text-slate-600 uppercase">agent: {ctx.agent}</div>}
-        </div>
-      )}
-      <Row k="Model" v={ctx.model} />
-      <Row k="Provider" v={ctx.provider} />
-      {ctx.modelsUsed && ctx.modelsUsed.length > 0 && (
-        <div className="space-y-1">
-          <div className="text-[9px] font-black uppercase tracking-widest text-slate-500">Models Used ({ctx.modelsUsed.length})</div>
-          <div className="flex flex-wrap gap-1.5">
-            {ctx.modelsUsed.map((m: string) => (
-              <span key={m} className="flex items-center gap-1 text-[10px] font-mono text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
-                <Cpu size={10} /> {m}
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-      <Row k="CWD" v={ctx.cwd} />
-
-      {ctx.projectConfig && (ctx.projectConfig.counts?.skills > 0 || ctx.projectConfig.counts?.mcps > 0) && (
-        <div className="space-y-3 pt-2 border-t border-slate-800">
-          <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">
-            <Settings2 size={12} /> Project Configuration
-          </div>
-          {ctx.projectConfig.counts.skills > 0 && (
-            <details open>
-              <summary className="text-[9px] font-black uppercase tracking-widest text-slate-500 cursor-pointer hover:text-slate-300">
-                Skills ({ctx.projectConfig.counts.skills}) ▸
-              </summary>
-              <div className="mt-2 flex flex-wrap gap-1.5">
-                {ctx.projectConfig.skills.map((s: any, i: number) => (
-                  <span
-                    key={i}
-                    title={`${s.scope} · ${s.agent}${s.description ? "\n" + s.description : ""}`}
-                    className={`text-[10px] font-mono px-2 py-0.5 rounded border ${s.scope === "project" ? "bg-cyan-500/10 text-cyan-400 border-cyan-500/20" : "bg-slate-800/60 text-slate-400 border-slate-700"}`}
-                  >
-                    {s.name}
-                  </span>
-                ))}
-              </div>
-            </details>
-          )}
-          {ctx.projectConfig.counts.mcps > 0 && (
-            <details open>
-              <summary className="text-[9px] font-black uppercase tracking-widest text-slate-500 cursor-pointer hover:text-slate-300">
-                MCP Servers ({ctx.projectConfig.counts.mcps}) ▸
-              </summary>
-              <div className="mt-2 space-y-1">
-                {ctx.projectConfig.mcps.map((m: any, i: number) => (
-                  <div key={i} className="flex items-center justify-between gap-2 text-[10px] font-mono bg-slate-900/60 border border-slate-800 rounded px-2 py-1">
-                    <span className="text-slate-300 truncate" title={m.command || m.url || ""}>{m.name}</span>
-                    <span className={`px-1.5 py-0.5 rounded text-[8px] font-black uppercase ${m.scope === "project" ? "bg-blue-500/10 text-blue-400 border border-blue-500/20" : "bg-slate-800 text-slate-400 border border-slate-700"}`}>{m.agent}</span>
-                  </div>
-                ))}
-              </div>
-            </details>
-          )}
-        </div>
-      )}
-
-      <Row k="Sandbox" v={ctx.sandbox} />
-      <Row k="Approval Policy" v={ctx.approvalPolicy} />
-      <Row k="Reasoning Effort" v={ctx.reasoningEffort} />
-      {ctx.instructions && (
-        <details>
-          <summary className="text-[9px] font-black uppercase tracking-widest text-slate-500 cursor-pointer hover:text-slate-300">Instructions ▸</summary>
-          <pre className="mt-2 text-[10px] font-mono text-slate-400 whitespace-pre-wrap bg-slate-950 border border-slate-800 rounded-lg p-3 max-h-64 overflow-y-auto">{ctx.instructions}</pre>
-        </details>
-      )}
-      {ctx.systemPrompt && (
-        <details>
-          <summary className="text-[9px] font-black uppercase tracking-widest text-slate-500 cursor-pointer hover:text-slate-300">System Prompt ▸</summary>
-          <pre className="mt-2 text-[10px] font-mono text-slate-400 whitespace-pre-wrap bg-slate-950 border border-slate-800 rounded-lg p-3 max-h-64 overflow-y-auto">
-            {ctx.systemPrompt.slice(0, 4000)}
-            {ctx.systemPrompt.length > 4000 ? "\n…(truncated)" : ""}
-          </pre>
-        </details>
-      )}
-      {ctx.env && (
-        <details>
-          <summary className="text-[9px] font-black uppercase tracking-widest text-slate-500 cursor-pointer hover:text-slate-300">Environment ▸</summary>
-          <pre className="mt-2 text-[10px] font-mono text-slate-400 whitespace-pre-wrap bg-slate-950 border border-slate-800 rounded-lg p-3 max-h-48 overflow-y-auto">{JSON.stringify(ctx.env, null, 2)}</pre>
-        </details>
-      )}
-      {!hasAny && <div className="text-slate-600 text-[10px] italic">No context metadata found for this session.</div>}
-    </div>
-  );
-}
-
-function ToolsPanel({ summary, onJump }: { summary: { name: string; count: number; avg: number }[]; onJump: (name: string) => void }) {
-  if (!summary.length) return <div className="text-slate-600 text-[10px] italic">No tool calls in this session.</div>;
-  const maxCount = summary[0]?.count || 1;
-  return (
-    <div className="space-y-3">
-      <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">
-        <Wrench size={12} /> Tool Summary
-      </div>
-      {summary.map((t) => (
-        <button key={t.name} onClick={() => onJump(t.name)} className="w-full text-left bg-slate-900/60 border border-slate-800 hover:border-slate-700 rounded-lg px-3 py-2 transition-colors">
-          <div className="flex items-center justify-between mb-1">
-            <span className="text-[11px] font-mono text-slate-200 truncate">{t.name}</span>
-            <span className="text-[9px] font-black text-blue-400 tabular-nums">×{t.count}</span>
-          </div>
-          <div className="h-1 bg-slate-800 rounded overflow-hidden">
-            <div className="h-full bg-blue-500/60" style={{ width: `${(t.count / maxCount) * 100}%` }} />
-          </div>
-          <div className="text-[9px] font-mono text-slate-600 mt-1">avg {t.avg >= 1000 ? `${(t.avg / 1000).toFixed(2)}s` : `${t.avg.toFixed(0)}ms`}</div>
-        </button>
-      ))}
-    </div>
-  );
-}
-
-function ArtifactsPanel({ artifacts }: { artifacts: Artifact[] }) {
-  if (!artifacts.length) return <div className="text-slate-600 text-[10px] italic">No artifacts for this session.</div>;
-  
-  return (
-    <div className="space-y-6">
-      <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">
-        <LayoutPanelLeft size={12} /> Session Artifacts
-      </div>
-      <div className="space-y-4">
-        {artifacts.map((a, i) => (
-          <div key={i} className="bg-slate-900/60 border border-slate-800 rounded-xl overflow-hidden shadow-lg group text-[11px]">
-            <div className="px-3 py-2 border-b border-slate-800 bg-slate-950/40 flex items-center justify-between">
-               <div className="flex items-center gap-2 min-w-0">
-                  {a.type === 'video' ? <Play size={10} className="text-blue-400" /> : 
-                   a.type === 'image' ? <LayoutPanelLeft size={10} className="text-emerald-400" /> :
-                   a.type === 'terminal' ? <Terminal size={10} className="text-purple-400" /> :
-                   <FileText size={10} className="text-slate-400" />}
-                  <span className="text-[10px] font-mono text-slate-300 truncate" title={a.name}>{a.name}</span>
-               </div>
-               <a 
-                 href={`http://localhost:8000/artifacts?path=${encodeURIComponent(a.path)}`} 
-                 download={a.name}
-                 className="text-[8px] font-black uppercase text-slate-500 hover:text-white transition-colors"
-               >
-                 DL
-               </a>
-            </div>
-            
-            <div className="p-3">
-               {a.type === 'video' && (
-                 <video controls className="w-full rounded-lg shadow-inner bg-black aspect-video">
-                   <source src={`http://localhost:8000/artifacts?path=${encodeURIComponent(a.path)}`} type="video/mp4" />
-                   Your browser does not support the video tag.
-                 </video>
-               )}
-               {a.type === 'image' && (
-                 <img 
-                    src={`http://localhost:8000/artifacts?path=${encodeURIComponent(a.path)}`} 
-                    alt={a.name} 
-                    className="w-full rounded-lg shadow-inner bg-slate-950" 
-                 />
-               )}
-               {(a.type === 'terminal' || a.type === 'document') && (
-                 <div className="max-h-48 overflow-y-auto scrollbar-thin">
-                    <ArtifactViewer path={a.path} />
-                 </div>
-               )}
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function ArtifactViewer({ path }: { path: string }) {
-  const [content, setContent] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    fetch(`http://localhost:8000/artifacts?path=${encodeURIComponent(path)}`)
-      .then(res => res.text())
-      .then(t => {
-        setContent(t);
-        setLoading(false);
-      })
-      .catch(() => setLoading(false));
-  }, [path]);
-
-  if (loading) return <div className="animate-pulse h-4 bg-slate-800 rounded w-1/2"></div>;
-  return (
-    <pre className="text-[9px] font-mono text-slate-400 whitespace-pre-wrap break-all leading-relaxed">
-      {content || "Failed to load content."}
-    </pre>
-  );
-}
-
-function EventCard({ event, mode = "all", agent }: { event: any, mode?: "dialogue" | "brain" | "all", agent?: string | null }) {
-  const { type, timestamp, message, attachment, toolUseResult, payload, content, thoughts, toolCalls } = event;
-
-  // Render a tiny timestamp badge if available
   const renderTimestamp = () => {
-    const ts = timestamp || event.normalized_timestamp;
+    const ts = event.normalized_timestamp || (event.timestamp ? new Date(event.timestamp).getTime() : null);
     if (!ts) return null;
-    const date = new Date(ts);
-    if (Number.isNaN(date.getTime())) return null;
-    const timeStr = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
     return (
-      <div className="flex items-center gap-1 text-[9px] font-mono text-slate-500 mb-2 opacity-60 group-hover:opacity-100 transition-opacity">
-        <Clock size={10} />
-        {timeStr}
-      </div>
+      <span className="text-[8px] font-mono text-slate-600 bg-slate-950 px-1.5 py-0.5 rounded border border-slate-800/50">
+        {format(new Date(ts), 'HH:mm:ss')}
+      </span>
     );
   };
 
-  // Helper to extract text from content array (Used by Claude and Cursor)
-  const extractText = (contentArr: any[]) => {
-    if (!Array.isArray(contentArr)) return "";
-    return contentArr
-      .filter((c: any) => c.type === "text")
-      .map((c: any) => c.text)
-      .filter(Boolean)
-      .join("\n");
+  const extractText = (content: any) => {
+    if (!content) return "";
+    if (typeof content === 'string') return content;
+    if (Array.isArray(content)) {
+      return content.map(c => {
+        if (typeof c === 'string') return c;
+        if (c.type === "text" || c.type === "input_text") return c.text || c.input_text || "";
+        if (c.value && c.kind !== "thinking") return c.value;
+        return "";
+      }).filter(Boolean).join("\n\n");
+    }
+    if (typeof content === 'object') {
+       return content.text || content.input_text || content.value || "";
+    }
+    return "";
   };
 
   const parts: React.ReactNode[] = [];
@@ -985,49 +570,21 @@ function EventCard({ event, mode = "all", agent }: { event: any, mode?: "dialogu
   // 1. OLLAMA
   if (agent === "ollama") {
      parts.push(
-        <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl relative overflow-hidden group hover:border-slate-600 transition-all text-left">
+        <div key="ollama-msg" className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl relative overflow-hidden group hover:border-slate-600 transition-all text-left">
           <div className="absolute top-0 left-0 w-1 h-full bg-blue-600"></div>
           <div className="flex justify-between items-start mb-4">
             <div className="flex items-center gap-2 text-blue-400 font-black text-[10px] uppercase tracking-[0.2em]">
-                <User size={16} strokeWidth={3} /> Ollama History
+                <Sparkles size={16} strokeWidth={3} /> Thinking
             </div>
             {renderTimestamp()}
           </div>
-          <div className="text-slate-200 whitespace-pre-wrap text-sm leading-relaxed font-medium">{content}</div>
+          <ResponseBody text={typeof event.content === 'string' ? event.content : JSON.stringify(event.content)} />
         </div>
      );
   }
 
-  // 2. COPILOT (Separate blocks for user/assistant parts)
-  if (agent === "copilot") {
-    if (type === "user" && payload?.text) {
-       parts.push(
-        <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl relative overflow-hidden group hover:border-slate-600 transition-all text-left">
-          <div className="absolute top-0 left-0 w-1 h-full bg-blue-600"></div>
-          <div className="flex justify-between items-start mb-4">
-            <div className="flex items-center gap-2 text-blue-400 font-black text-[10px] uppercase tracking-[0.2em]">
-                <User size={16} strokeWidth={3} /> User Prompt
-            </div>
-            {renderTimestamp()}
-          </div>
-          <div className="text-slate-200 whitespace-pre-wrap text-sm leading-relaxed font-medium">{payload.text}</div>
-        </div>
-       );
-    }
-    if (type === "assistant_thinking" && payload?.text && mode !== "dialogue") {
-       parts.push(
-        <div className="bg-indigo-500/5 border border-indigo-500/20 rounded-2xl p-6 shadow-sm ml-4 border-l-4 border-l-indigo-500/50 group">
-          <div className="flex justify-between items-start mb-3">
-            <div className="flex items-center gap-2 text-indigo-400 font-bold text-xs uppercase tracking-widest">
-              <Brain size={16} /> Copilot Reasoning
-            </div>
-            {renderTimestamp()}
-          </div>
-          <div className="text-slate-400 whitespace-pre-wrap italic text-xs leading-relaxed font-mono opacity-80">{payload.text}</div>
-        </div>
-       );
-    }
-    if (type === "assistant" && Array.isArray(payload)) {
+  // 2. COPILOT (Array payload with kind: "thinking" vs other)
+  if (agent === "copilot" && Array.isArray(payload)) {
        const thinkingParts = payload.filter((p: any) => p.kind === "thinking" || p.type === "thinking");
        const textParts = payload.filter((p: any) => p.kind !== "thinking" && p.type !== "thinking" && (p.value || typeof p === 'string'));
        const combinedText = textParts.map((p: any) => typeof p === 'string' ? p : (p.value || "")).join("");
@@ -1049,11 +606,11 @@ function EventCard({ event, mode = "all", agent }: { event: any, mode?: "dialogu
        }
        if (combinedText && mode !== "brain") {
          parts.push(
-           <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl relative overflow-hidden group hover:border-slate-600 transition-all">
+           <div key="copilot-msg" className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl relative overflow-hidden group hover:border-slate-600 transition-all">
              <div className="absolute top-0 left-0 w-1 h-full bg-indigo-600"></div>
              <div className="flex justify-between items-start mb-4">
                <div className="flex items-center gap-2 text-indigo-400 font-black text-[10px] uppercase tracking-[0.2em]">
-                   <GitBranch size={16} strokeWidth={3} /> Response
+                   <GitBranch size={16} strokeWidth={3} /> Thinking
                </div>
                {renderTimestamp()}
              </div>
@@ -1061,32 +618,15 @@ function EventCard({ event, mode = "all", agent }: { event: any, mode?: "dialogu
            </div>
          );
        }
-    }
   }
 
-  // 3. VIBE / OPENCODE Common User Prompt
-  if (type === "user" && payload?.content && !message) {
-     parts.push(
-        <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl relative overflow-hidden group hover:border-slate-600 transition-all text-left">
-          <div className="absolute top-0 left-0 w-1 h-full bg-blue-600"></div>
-          <div className="flex justify-between items-start mb-4">
-            <div className="flex items-center gap-2 text-blue-400 font-black text-[10px] uppercase tracking-[0.2em]">
-                <User size={16} strokeWidth={3} /> User Prompt
-            </div>
-            {renderTimestamp()}
-          </div>
-          <div className="text-slate-200 whitespace-pre-wrap text-sm leading-relaxed font-medium">{payload.content}</div>
-        </div>
-     );
-  }
-
-  // 4. VIBE / OPENCODE Assistant Response
+  // 3. VIBE / OPENCODE Assistant Response
   if (type === "assistant" && payload?.content && !message) {
     const isOpencode = agent === "opencode";
     const accent = isOpencode ? "bg-amber-600" : "bg-pink-600";
     const textColor = isOpencode ? "text-amber-400" : "text-pink-400";
     parts.push(
-      <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl relative overflow-hidden group hover:border-slate-600 transition-all text-left">
+      <div key="vibe-msg" className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl relative overflow-hidden group hover:border-slate-600 transition-all text-left">
         <div className={`absolute top-0 left-0 w-1 h-full ${accent}`}></div>
         <div className="flex justify-between items-start mb-4">
           <div className={`flex items-center gap-2 ${textColor} font-black text-[10px] uppercase tracking-[0.2em]`}>
@@ -1099,125 +639,54 @@ function EventCard({ event, mode = "all", agent }: { event: any, mode?: "dialogu
     );
   }
 
-  // 5. OPENCODE tool_call
-  if (agent === "opencode" && type === "tool_call" && payload && mode !== "dialogue") {
-    const state = payload.state || {};
-    const status = state.status;
-    const input = state.input;
-    const output = state.output;
+  // 4. VIBE / OPENCODE User Prompt
+  if (type === "user" && payload?.content && !message) {
     parts.push(
-      <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-4 shadow-lg group">
-        <div className="flex items-center justify-between mb-2">
-          <div className="flex items-center gap-2 text-amber-400 font-black text-[10px] uppercase tracking-[0.2em]">
-            <Wrench size={14} strokeWidth={3} /> Tool · {payload.tool || "unknown"}
-          </div>
-          <div className="flex items-center gap-3">
-             {renderTimestamp()}
-             {status && <span className="text-[9px] font-bold uppercase tracking-widest text-slate-500">{status}</span>}
-          </div>
-        </div>
-        {input && (
-          <details className="mt-1">
-            <summary className="text-[10px] font-mono text-slate-500 cursor-pointer hover:text-slate-300">input ▸</summary>
-            <pre className="mt-2 text-[10px] font-mono text-slate-400 whitespace-pre-wrap bg-slate-950 border border-slate-800 rounded-lg p-3 max-h-64 overflow-y-auto">{typeof input === "string" ? input : JSON.stringify(input, null, 2)}</pre>
-          </details>
-        )}
-        {output && (
-          <details className="mt-1">
-            <summary className="text-[10px] font-mono text-slate-500 cursor-pointer hover:text-slate-300">output ▸</summary>
-            <pre className="mt-2 text-[10px] font-mono text-slate-400 whitespace-pre-wrap bg-slate-950 border border-slate-800 rounded-lg p-3 max-h-64 overflow-y-auto">{typeof output === "string" ? output.slice(0, 4000) : JSON.stringify(output, null, 2).slice(0, 4000)}</pre>
-          </details>
-        )}
-      </div>
-    );
-  }
-
-  // 6. GEMINI / ANTIGRAVITY (Multi-part support: thoughts + content + toolCalls)
-  if (thoughts && Array.isArray(thoughts) && mode !== "dialogue") {
-    parts.push(
-      <div className="space-y-4">
-        {thoughts.map((thought: any, i: number) => (
-          <div key={i} className="bg-cyan-500/5 border border-cyan-500/20 rounded-2xl p-6 shadow-sm ml-4 border-l-4 border-l-cyan-500/50 group">
-            <div className="flex justify-between items-start mb-3">
-              <div className="flex items-center gap-2 text-cyan-400 font-bold text-xs uppercase tracking-widest">
-                <Brain size={16} /> {thought.subject || "Reasoning"}
-              </div>
-              {renderTimestamp()}
-            </div>
-            <div className="text-slate-400 whitespace-pre-wrap italic text-[11px] leading-relaxed font-mono opacity-80">{thought.description}</div>
-          </div>
-        ))}
-      </div>
-    );
-  }
-
-  if (toolCalls && Array.isArray(toolCalls) && mode !== "dialogue") {
-    parts.push(
-      <div className="space-y-4">
-        {toolCalls.map((call: any, i: number) => (
-          <div key={i} className="space-y-4">
-            <div className="bg-blue-500/5 border border-blue-500/20 rounded-2xl p-6 shadow-sm ml-4 border-l-4 border-l-blue-500/50 group">
-              <div className="flex justify-between items-start mb-4">
-                <div className="flex items-center gap-2 text-blue-400 font-bold text-xs uppercase tracking-widest">
-                  <Code size={16} /> Tool Call: {call.name}
-                </div>
-                {renderTimestamp()}
-              </div>
-              <pre className="bg-slate-950 text-blue-300 p-5 rounded-xl text-[11px] overflow-x-auto font-mono border border-slate-800 shadow-inner">
-                {JSON.stringify(call.args, null, 2)}
-              </pre>
-            </div>
-            {call.result && (
-              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl ml-8 group hover:border-emerald-500/30 transition-all">
-                <div className="flex justify-between items-start mb-4">
-                  <div className="flex items-center gap-2 text-slate-500 font-bold text-xs uppercase tracking-widest group-hover:text-emerald-500">
-                    <Terminal size={16} /> Tool Output
-                  </div>
-                  {renderTimestamp()}
-                </div>
-                <pre className="bg-slate-950 text-emerald-400 p-5 rounded-xl text-[11px] overflow-x-auto font-mono border border-slate-800 shadow-inner">
-                  {typeof call.result === 'string' ? call.result : JSON.stringify(call.result, null, 2)}
-                </pre>
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
-    );
-  }
-
-  if (type === "user" && content && (agent === "gemini" || agent === "antigravity")) {
-    const textContent = Array.isArray(content) ? content.map((c: any) => c.text).filter(Boolean).join("\n") : (typeof content === 'string' ? content : "");
-    if (textContent) {
-      parts.push(
-        <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl relative overflow-hidden group hover:border-slate-600 transition-all text-left">
-          <div className="absolute top-0 left-0 w-1 h-full bg-blue-600"></div>
-          <div className="flex justify-between items-start mb-4">
-            <div className="flex items-center gap-2 text-blue-400 font-black text-[10px] uppercase tracking-[0.2em]">
-                <User size={16} strokeWidth={3} /> User Prompt
-            </div>
-            {renderTimestamp()}
-          </div>
-          <div className="text-slate-200 whitespace-pre-wrap text-sm leading-relaxed font-medium">{textContent}</div>
-        </div>
-      );
-    }
-  }
-
-  const role = event.role || event.message?.role;
-  if ((type === "assistant" || role === "assistant" || role === "model" || role === "gemini" || type === "model" || type === "gemini") && typeof content === 'string' && content.trim() && mode !== "brain") {
-    parts.push(
-      <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl relative overflow-hidden group hover:border-slate-600 transition-all text-left">
-        <div className="absolute top-0 left-0 w-1 h-full bg-cyan-600"></div>
+      <div key="vibe-user" className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl relative overflow-hidden group hover:border-slate-600 transition-all text-left">
+        <div className="absolute top-0 left-0 w-1 h-full bg-blue-600"></div>
         <div className="flex justify-between items-start mb-4">
-          <div className="flex items-center gap-2 text-cyan-400 font-black text-[10px] uppercase tracking-[0.2em]">
-              <Sparkles size={16} strokeWidth={3} /> Response
+          <div className="flex items-center gap-2 text-blue-400 font-black text-[10px] uppercase tracking-[0.2em]">
+              <User size={16} strokeWidth={3} /> User Prompt
           </div>
           {renderTimestamp()}
         </div>
-        <ResponseBody text={content} />
+        <div className="text-slate-200 whitespace-pre-wrap text-sm leading-relaxed font-medium">{payload.content}</div>
       </div>
     );
+  }
+
+  // 5. ANTIGRAVITY / GEMINI (brain-based Markdown synthesis)
+  if (type === "brain_md") {
+     parts.push(
+        <div key="brain-md" className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl relative overflow-hidden group hover:border-slate-600 transition-all text-left">
+          <div className={`absolute top-0 left-0 w-1 h-full ${role === 'user' ? 'bg-blue-600' : 'bg-cyan-600'}`}></div>
+          <div className="flex justify-between items-start mb-4">
+            <div className={`flex items-center gap-2 ${role === 'user' ? 'text-blue-400' : 'text-cyan-400'} font-black text-[10px] uppercase tracking-[0.2em]`}>
+                {role === 'user' ? <User size={16} strokeWidth={3} /> : <Sparkles size={16} strokeWidth={3} />}
+                {event.payload?.label || "Thinking"}
+            </div>
+            {renderTimestamp()}
+          </div>
+          <ResponseBody text={event.payload?.content} />
+        </div>
+     );
+  }
+
+  // 6. Generic Gemini Tool Call
+  if (type === "gemini_tool") {
+     parts.push(
+        <div key="gemini-tool" className="bg-cyan-500/5 border border-cyan-500/20 rounded-2xl p-6 shadow-sm ml-4 border-l-4 border-l-cyan-500/50 group">
+          <div className="flex justify-between items-start mb-4">
+            <div className="flex items-center gap-2 text-cyan-400 font-bold text-xs uppercase tracking-widest">
+              <Code size={16} /> Tool Call: {event.payload?.name}
+            </div>
+            {renderTimestamp()}
+          </div>
+          <pre className="bg-slate-950 text-cyan-300 p-5 rounded-xl text-[11px] overflow-x-auto font-mono border border-slate-800 shadow-inner">
+            {JSON.stringify(event.payload?.arguments, null, 2)}
+          </pre>
+        </div>
+     );
   }
 
   // 7. CATCH-ALL for separate reasoning events (Claude/Cursor/Copilot/Qwen)
@@ -1235,7 +704,7 @@ function EventCard({ event, mode = "all", agent }: { event: any, mode?: "dialogu
       const border = isCopilot ? "border-indigo-500/20" : "border-amber-500/20";
 
       parts.push(
-        <div className={`${bg} border ${border} rounded-2xl p-6 shadow-sm ml-4 border-l-4 ${accent} group`}>
+        <div key="catch-reasoning" className={`${bg} border ${border} rounded-2xl p-6 shadow-sm ml-4 border-l-4 ${accent} group`}>
           <div className="flex justify-between items-start mb-3">
             <div className={`flex items-center gap-2 ${textColor} font-bold text-xs uppercase tracking-widest`}>
               <Brain size={16} /> Reasoning
@@ -1253,7 +722,7 @@ function EventCard({ event, mode = "all", agent }: { event: any, mode?: "dialogu
     const toolResults = Array.isArray(message.content) ? message.content.filter((c: any) => c.type === "tool_result") : [];
     if (toolResults.length > 0 && mode !== "dialogue") {
       parts.push(
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl ml-8 group hover:border-emerald-500/30 transition-all">
+        <div key="claude-tool-results" className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl ml-8 group hover:border-emerald-500/30 transition-all">
           <div className="flex justify-between items-start mb-4">
             <div className="flex items-center gap-2 text-slate-500 font-bold text-xs uppercase tracking-widest group-hover:text-emerald-500">
               <Terminal size={16} /> Tool Output
@@ -1274,7 +743,7 @@ function EventCard({ event, mode = "all", agent }: { event: any, mode?: "dialogu
     const textContent = Array.isArray(message.content) ? extractText(message.content) : (typeof message.content === 'string' ? message.content : "");
     if (textContent && mode !== "brain") {
       parts.push(
-        <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl relative overflow-hidden group hover:border-slate-600 transition-all text-left">
+        <div key="claude-user-msg" className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl relative overflow-hidden group hover:border-slate-600 transition-all text-left">
           <div className="absolute top-0 left-0 w-1 h-full bg-blue-600"></div>
           <div className="flex justify-between items-start mb-4">
             <div className="flex items-center gap-2 text-blue-400 font-black text-[10px] uppercase tracking-[0.2em]">
@@ -1321,11 +790,11 @@ function EventCard({ event, mode = "all", agent }: { event: any, mode?: "dialogu
 
     if (text && mode !== "brain") {
       parts.push(
-        <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl relative overflow-hidden group hover:border-slate-600 transition-all text-left">
+        <div key="claude-assistant-msg" className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl relative overflow-hidden group hover:border-slate-600 transition-all text-left">
           <div className="absolute top-0 left-0 w-1 h-full bg-emerald-500"></div>
           <div className="flex justify-between items-start mb-4">
             <div className="flex items-center gap-2 text-emerald-400 font-black text-[10px] uppercase tracking-[0.2em]">
-                <MessageSquare size={16} strokeWidth={3} /> Response
+                <MessageSquare size={16} strokeWidth={3} /> Thinking
             </div>
             {renderTimestamp()}
           </div>
@@ -1345,7 +814,7 @@ function EventCard({ event, mode = "all", agent }: { event: any, mode?: "dialogu
               {renderTimestamp()}
             </div>
             <pre className="bg-slate-950 text-blue-300 p-5 rounded-xl text-[11px] overflow-x-auto font-mono border border-slate-800 shadow-inner">
-              {JSON.stringify(toolUse.input || toolUse.args || toolUse.payload, null, 2)}
+              {JSON.stringify(toolUse.input || toolUse.args || toolUse.payload || toolUse.parameters, null, 2)}
             </pre>
           </div>
         );
@@ -1354,14 +823,15 @@ function EventCard({ event, mode = "all", agent }: { event: any, mode?: "dialogu
   }
 
   // 9. CODEX (request_item / response_item)
-  if (type === "response_item" || type === "request_item") {
-    const role = payload?.role || (type === "request_item" ? "user" : "assistant");
-    const itemType = payload?.type;
+  if (agent === "codex" || type === "response_item" || type === "request_item") {
+    const r = payload?.role || (type === "request_item" ? "user" : "assistant") || role;
+    const itemType = payload?.type || type;
     
-    if (itemType === "reasoning" && mode !== "dialogue") {
+    const isReasoning = itemType === "reasoning" || itemType === "thought" || itemType === "thinking";
+    if (isReasoning && mode !== "dialogue") {
        const isEncrypted = !payload.content && !!payload.encrypted_content;
        parts.push(
-          <div className="bg-purple-500/5 border border-purple-500/20 rounded-2xl p-6 shadow-sm ml-4 border-l-4 border-l-purple-500/50 group">
+          <div key="codex-reasoning" className="bg-purple-500/5 border border-purple-500/20 rounded-2xl p-6 shadow-sm ml-4 border-l-4 border-l-purple-500/50 group">
             <div className="flex justify-between items-start mb-3">
               <div className="flex items-center gap-2 text-purple-400 font-bold mb-3 text-xs uppercase tracking-widest">
                 <Brain size={16} /> Reasoning {isEncrypted && <span className="text-[9px] font-mono normal-case tracking-normal text-purple-400/70 bg-purple-400/10 px-1.5 py-0.5 rounded border border-purple-400/30">encrypted</span>}
@@ -1375,50 +845,42 @@ function EventCard({ event, mode = "all", agent }: { event: any, mode?: "dialogu
               </div>
             ) : (
               <div className="text-slate-400 whitespace-pre-wrap italic text-xs leading-relaxed font-mono opacity-80">{
-                Array.isArray(payload.content)
-                  ? payload.content.map((c: any) => c?.text ?? c?.summary ?? c?.content ?? (typeof c === 'string' ? c : "")).filter(Boolean).join("\n\n")
-                  : (typeof payload.content === 'string' ? payload.content : (payload.summary ?? payload.text ?? ""))
+                extractText(payload?.content || payload?.text || payload?.thinking || payload?.summary || payload?.value)
               }</div>
             )}
           </div>
        );
     }
 
-    if ((itemType === "function_call" || itemType === "tool_use") && mode !== "dialogue") {
+    if ((itemType === "function_call" || itemType === "tool_use" || itemType === "tool_call") && mode !== "dialogue") {
        parts.push(
-          <div className="bg-blue-500/5 border border-blue-500/20 rounded-2xl p-6 shadow-sm ml-4 border-l-4 border-l-blue-500/50 group">
+          <div key="codex-tool" className="bg-blue-500/5 border border-blue-500/20 rounded-2xl p-6 shadow-sm ml-4 border-l-4 border-l-blue-500/50 group">
             <div className="flex justify-between items-start mb-4">
               <div className="flex items-center gap-2 text-blue-400 font-bold mb-4 text-xs uppercase tracking-widest">
-                <Code size={16} /> Tool Call: {payload.name}
+                <Code size={16} /> Tool Call: {payload?.name || payload?.tool}
               </div>
               {renderTimestamp()}
             </div>
             <pre className="bg-slate-950 text-blue-300 p-5 rounded-xl text-[11px] overflow-x-auto font-mono border border-slate-800 shadow-inner">
-              {JSON.stringify(payload.arguments || payload.input || payload.parameters, null, 2)}
+              {JSON.stringify(payload?.arguments || payload?.input || payload?.parameters || payload?.payload, null, 2)}
             </pre>
           </div>
        );
     }
 
-    if (itemType === "message") {
-       const content = payload.content;
-       let text = "";
-       if (Array.isArray(content)) {
-          text = content.map((c: any) => c.text || c.input_text).filter(Boolean).join("\n");
-       } else if (typeof content === 'string') {
-          text = content;
-       }
+    if (itemType === "message" || type === "user" || type === "assistant" || payload?.content) {
+       const text = extractText(payload?.content || payload?.text || content || event.text);
 
        if (text) {
-         const isAssistant = role === "assistant";
+         const isAssistant = r === "assistant" || r === "model" || r === "bot";
          if (mode !== "brain") {
            parts.push(
-              <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl relative overflow-hidden group hover:border-slate-600 transition-all text-left">
+              <div key="codex-message" className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl relative overflow-hidden group hover:border-slate-600 transition-all text-left">
                 <div className={`absolute top-0 left-0 w-1 h-full ${isAssistant ? 'bg-emerald-600' : 'bg-blue-600'}`}></div>
                 <div className="flex justify-between items-start mb-4">
                   <div className={`flex items-center gap-2 ${isAssistant ? 'text-emerald-400' : 'text-blue-400'} font-black text-[10px] uppercase tracking-[0.2em]`}>
                       {isAssistant ? <MessageSquare size={16} strokeWidth={3} /> : <User size={16} strokeWidth={3} />}
-                      {isAssistant ? 'Response' : 'User Prompt'}
+                      {isAssistant ? 'Thinking' : 'User Prompt'}
                   </div>
                   {renderTimestamp()}
                 </div>
@@ -1435,7 +897,7 @@ function EventCard({ event, mode = "all", agent }: { event: any, mode?: "dialogu
   // 10. SYSTEM METADATA
   if (type === "session_meta") {
     parts.push(
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-2xl opacity-90 border-dashed">
+      <div key="sys-meta" className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-2xl opacity-90 border-dashed">
         <div className="flex items-center gap-2 text-slate-400 font-bold mb-4 text-xs uppercase tracking-widest">
           <Info size={16} /> Session Metadata
         </div>
@@ -1455,45 +917,28 @@ function EventCard({ event, mode = "all", agent }: { event: any, mode?: "dialogu
 
   if (type === "event_msg") {
     parts.push(
-      <div className="bg-slate-900/30 border border-slate-800/50 rounded-xl p-4 text-[10px] text-slate-500 flex items-center gap-4 group hover:bg-slate-800/20 transition-all">
-        <Zap size={14} className="text-purple-500/50 group-hover:text-purple-400" />
-        <span className="font-bold text-slate-400 uppercase tracking-[0.2em]">{payload?.type}</span>
+      <div key="evt-msg" className="bg-slate-900/30 border border-slate-800/50 rounded-xl p-4 text-[10px] text-slate-500 flex items-center gap-4 group hover:bg-slate-800/20 transition-all">
+         <div className="p-2 bg-slate-800 rounded-lg group-hover:text-white transition-colors">
+            <Activity size={14} />
+         </div>
+         <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 mb-1">
+               <span className="font-black uppercase tracking-widest opacity-60">Log Event</span>
+               {renderTimestamp()}
+            </div>
+            <div className="truncate font-mono opacity-80">{event.payload?.message || JSON.stringify(event.payload)}</div>
+         </div>
       </div>
     );
   }
 
   if (parts.length === 0 && mode === "all") {
     parts.push(
-      <div className="bg-slate-900/20 border border-slate-800/30 rounded-xl p-3 text-[10px] text-slate-600 flex justify-between items-center opacity-40 hover:opacity-100 transition-opacity">
+      <div key="fallback-evt" className="bg-slate-900/20 border border-slate-800/30 rounded-xl p-3 text-[10px] text-slate-600 flex justify-between items-center opacity-40 hover:opacity-100 transition-opacity">
         <span className="font-mono">System Event: {type}</span>
       </div>
     );
   }
 
-  return <div className="space-y-6 w-full">{parts.map((p, i) => <React.Fragment key={i}>{p}</React.Fragment>)}</div>;
-}
-function ResponseBody({ text, tone = "default" }: { text: string; tone?: "default" | "muted" }) {
-  const [mode, setMode] = useState<"md" | "raw">("md");
-  if (!text) return null;
-  const base = tone === "muted"
-    ? "text-slate-400 whitespace-pre-wrap italic text-xs leading-relaxed font-mono opacity-80"
-    : "text-slate-200 whitespace-pre-wrap text-sm leading-relaxed font-medium";
-  return (
-    <div className="relative group/body">
-      {mode === "md" ? (
-        <div className="prose prose-invert prose-sm max-w-none text-slate-200 text-sm leading-relaxed">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
-        </div>
-      ) : (
-        <div className={base}>{text}</div>
-      )}
-      <button
-        onClick={(e) => { e.stopPropagation(); setMode(mode === "md" ? "raw" : "md"); }}
-        className="absolute -bottom-2 -right-2 text-[8px] font-black uppercase tracking-widest px-2 py-1 rounded-lg bg-slate-900/80 backdrop-blur-md border border-slate-800 text-slate-500 hover:text-blue-400 hover:border-blue-500/50 transition-all opacity-0 group-hover/body:opacity-100 shadow-xl z-10"
-        title={mode === "md" ? "Show raw text" : "Render markdown"}
-      >
-        {mode === "md" ? "View Raw" : "View MD"}
-      </button>
-    </div>
-  );
+  return <>{parts}</>;
 }
