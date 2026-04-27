@@ -49,9 +49,10 @@ export const metadata: Metadata = {
     googleBot: { index: true, follow: true, "max-image-preview": "large", "max-snippet": -1 },
   },
   verification: {
-    other: {
-      "msvalidate.01": "E3A699DC03845BF7441F05BCEC791E45",
-    },
+    google: process.env.GOOGLE_VERIFICATION,
+    other: process.env.BING_VERIFICATION
+      ? { "msvalidate.01": process.env.BING_VERIFICATION }
+      : undefined,
   },
 };
 

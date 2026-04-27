@@ -32,6 +32,9 @@ jobs:
           
       - run: npm ci || npm install
       - run: npm run build
+        env:
+          BING_VERIFICATION: ${{ secrets.BING_VERIFICATION }}
+          GOOGLE_VERIFICATION: ${{ secrets.GOOGLE_VERIFICATION }}
       - uses: actions/upload-pages-artifact@v3
         with:
           path: website/out
