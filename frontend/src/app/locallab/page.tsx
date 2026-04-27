@@ -104,7 +104,7 @@ export default function LocalLabPage() {
               </h3>
               <p className="text-slate-400 text-sm leading-relaxed max-w-2xl">
                  Your local models run entirely on your hardware. No data leaves your machine. 
-                 The Agent Observability Harness only tracks metadata for monitoring performance and usage efficiency.
+                 TokenTelemetry only tracks metadata for monitoring performance and usage efficiency.
               </p>
            </div>
         </section>

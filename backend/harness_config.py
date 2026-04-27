@@ -1,6 +1,6 @@
-"""Harness config: aliases + hidden projects.
+"""TokenTelemetry config: aliases + hidden projects.
 
-Lives at ~/.agent-harness/. Three files:
+Lives at ~/.tokentelemetry/. Three files:
   - aliases.json   {"/old/path": "/new/path", ...}   one-way, no chains
   - hidden.json    ["/path", ...]                    projects excluded from dashboard
   - VERSION        single integer for future migrations
@@ -19,7 +19,7 @@ import tempfile
 from pathlib import Path
 from typing import Dict, List, Set
 
-HARNESS_DIR = Path.home() / ".agent-harness"
+HARNESS_DIR = Path.home() / ".tokentelemetry"
 ALIASES_FILE = HARNESS_DIR / "aliases.json"
 HIDDEN_FILE = HARNESS_DIR / "hidden.json"
 VERSION_FILE = HARNESS_DIR / "VERSION"

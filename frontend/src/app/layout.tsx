@@ -14,8 +14,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Agent Observability Harness",
-  description: "Local monitoring for Claude, Codex, and Gemini agents.",
+  title: "TokenTelemetry",
+  description: "Local token + cost monitoring for Claude, Codex, Gemini, and other coding agents.",
 };
 
 export default function RootLayout({

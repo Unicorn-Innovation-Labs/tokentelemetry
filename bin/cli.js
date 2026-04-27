@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Agent Observability Harness — single cross-platform entry point.
+ * TokenTelemetry — single cross-platform entry point.
  *
  * One command bootstraps both services on macOS, Linux, and Windows:
  *   - creates the Python venv if missing
@@ -151,8 +151,8 @@ function ensureFrontend() {
 }
 
 async function start() {
-  console.log('\nAgent Observability Harness');
-  console.log('---------------------------');
+  console.log('\nTokenTelemetry');
+  console.log('--------------');
   checkNode();
   ensureBackend();
   ensureFrontend();

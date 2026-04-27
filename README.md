@@ -1,4 +1,4 @@
-# agent-harness
+# tokentelemetry
 
 A local, read-only observability dashboard for your coding agents.
 
@@ -23,8 +23,8 @@ Any one or more of the supported agents already in use (otherwise there's nothin
 ### Clone
 
 ```bash
-git clone https://github.com/VasiHemanth/agent-harness.git
-cd agent-harness
+git clone https://github.com/VasiHemanth/tokentelemetry.git
+cd tokentelemetry
 ```
 
 ### Run
@@ -67,10 +67,10 @@ Press `Ctrl+C` to stop both.
 
 ## Configuration
 
-A single hidden directory holds all harness state:
+A single hidden directory holds all TokenTelemetry state:
 
 ```
-~/.agent-harness/
+~/.tokentelemetry/
   aliases.json   # merge two project paths into one
   hidden.json    # projects you've hidden from the dashboard
   VERSION

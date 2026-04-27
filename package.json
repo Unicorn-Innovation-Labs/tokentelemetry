@@ -1,10 +1,10 @@
 {
-  "name": "agent-obs-harness",
+  "name": "tokentelemetry",
   "version": "1.0.0",
-  "description": "Local monitoring dashboard for Claude, Codex, Gemini, and other coding agents.",
+  "description": "Local token + cost monitoring dashboard for Claude, Codex, Gemini, and other coding agents.",
   "main": "index.js",
   "bin": {
-    "agent-harness": "./bin/cli.js"
+    "tokentelemetry": "./bin/cli.js"
   },
   "scripts": {
     "start": "node bin/cli.js"

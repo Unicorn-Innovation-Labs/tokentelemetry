@@ -27,7 +27,7 @@ def _aware(dt):
 def _now():
     return datetime.now(timezone.utc)
 
-app = FastAPI(title="Agent Observability Harness API")
+app = FastAPI(title="TokenTelemetry API")
 
 # Enable CORS for Next.js frontend
 app.add_middleware(
@@ -77,7 +77,7 @@ OPENCODE_DB = HOME / ".local/share/opencode/opencode.db"
 VSCODE_STORAGE = VSCODE_BASE / "User/workspaceStorage"
 CURSOR_STORAGE = CURSOR_BASE / "User/workspaceStorage"
 ANTIGRAVITY_BRAIN_DIR = GEMINI_DIR / "antigravity" / "brain"
-PROJECT_ALIASES_FILE = HOME / ".agent-harness" / "aliases.json"
+PROJECT_ALIASES_FILE = HOME / ".tokentelemetry" / "aliases.json"
 
 def _load_project_aliases() -> Dict[str, str]:
     # Ensure directory exists
@@ -153,7 +153,7 @@ class Session(BaseModel):
 
 @app.get("/")
 async def root():
-    return {"message": "Agent Observability Harness API is running"}
+    return {"message": "TokenTelemetry API is running"}
 
 @app.get("/agents")
 async def get_available_agents():
@@ -768,7 +768,7 @@ import time as _time
 from pricing import calculate_cost, PRICING, PRICING_UPDATED
 import logging as _logging
 
-_log = _logging.getLogger("harness.cache")
+_log = _logging.getLogger("tokentelemetry.cache")
 
 SESSIONS_TTL_SEC = 30.0
 
@@ -1141,7 +1141,7 @@ async def get_projects(include_hidden: bool = False):
 
 
 # ---------------------------------------------------------------------------
-# Harness config endpoints (aliases + hidden projects)
+# TokenTelemetry config endpoints (aliases + hidden projects)
 # ---------------------------------------------------------------------------
 class PathPayload(BaseModel):
     path: str
