@@ -36,7 +36,7 @@ export default function Navigation({ isCollapsed, setIsCollapsed }: NavigationPr
             <div className="bg-blue-600 p-2 rounded-lg shadow-lg shadow-blue-900/20">
               <Activity className="text-white" size={20} />
             </div>
-            <span className="font-black text-white tracking-tighter text-lg uppercase">AGENT</span>
+            <span className="font-black text-white tracking-tighter text-lg">TokenTelemetry</span>
           </div>
         )}
         {isCollapsed && (

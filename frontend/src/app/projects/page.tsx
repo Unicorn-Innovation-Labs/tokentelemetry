@@ -105,7 +105,7 @@ export default function ProjectsPage() {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
           {filteredProjects.map((project) => (
-            <div key={project.path} className="bg-slate-900 p-8 rounded-3xl shadow-2xl border border-slate-800 hover:border-slate-600 transition-all group flex flex-col h-full relative overflow-hidden">
+            <div key={project.path} className="bg-slate-900 p-8 rounded-3xl shadow-2xl border border-slate-800 hover:border-slate-600 transition-all group flex flex-col h-full relative overflow-hidden min-w-0">
               <div className="flex items-start justify-between mb-6">
                 <div className="bg-blue-600/10 p-4 rounded-2xl border border-blue-500/20">
                   <Folder className="text-blue-400" size={28} />
@@ -143,8 +143,8 @@ export default function ProjectsPage() {
                 </div>
               )}
 
-              <div className="flex items-center justify-between mt-auto pt-6 border-t border-slate-800/50">
-                <div className="flex gap-5">
+              <div className="flex flex-wrap items-center justify-between gap-3 mt-auto pt-6 border-t border-slate-800/50">
+                <div className="flex flex-wrap gap-x-4 gap-y-2 min-w-0">
                   <div className="flex flex-col items-center gap-1" title="Sessions">
                     <span className="text-lg font-black text-white leading-none">{project.session_count}</span>
                     <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest">Sess</span>
@@ -166,15 +166,13 @@ export default function ProjectsPage() {
                      </div>
                   )}
                 </div>
-                
-                <div className="flex flex-col items-end gap-2">
-                   <Link 
-                      href={`/projects/${encodeURIComponent(project.path)}`} 
-                      className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all shadow-lg flex items-center gap-2 group/btn"
-                   >
-                      Activity <ArrowRight size={14} className="group-hover:translate-x-1 transition-transform" />
-                   </Link>
-                </div>
+
+                <Link
+                   href={`/projects/${encodeURIComponent(project.path)}`}
+                   className="shrink-0 bg-blue-600 hover:bg-blue-500 text-white px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all shadow-lg inline-flex items-center gap-2 group/btn"
+                >
+                   Activity <ArrowRight size={14} className="group-hover:translate-x-1 transition-transform" />
+                </Link>
               </div>
             </div>
           ))}
