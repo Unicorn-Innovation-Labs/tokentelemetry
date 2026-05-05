@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Activity, Clock, Database, Terminal, Sparkles, TrendingUp, Cpu, Zap, GitBranch, Orbit, ArrowRight, MousePointer2, Code2 } from "lucide-react";
+import { Activity, Clock, Database, Terminal, Sparkles, TrendingUp, Cpu, Zap, GitBranch, Orbit, ArrowRight, MousePointer2, Code2, Layers } from "lucide-react";
 import { format } from "date-fns";
 import Link from "next/link";
 
@@ -39,11 +39,24 @@ const AGENT_HEX: Record<string, string> = {
   antigravity: "#10b981", qwen: "#3b82f6", vibe: "#f472b6", cursor: "#3b82f6", copilot: "#6366f1", opencode: "#f59e0b"
 };
 
+// interface QualityTotals {
+//   edit_turns: number;
+//   retry_turns: number;
+//   one_shot_rate: number | null;
+//   retry_rate: number | null;
+//   measured_sessions: number;
+// }
+interface AnalyticsTotals {
+  cache_hit_pct: number | null;
+  // quality: QualityTotals;
+}
+
 export default function Home() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [availableAgents, setAvailableAgents] = useState<string[]>([]);
   const [byModel, setByModel] = useState<Record<string, { total: number; session_count: number; agent: string }>>({});
   const [pricingUpdated, setPricingUpdated] = useState<string>("");
+  const [analyticsTotals, setAnalyticsTotals] = useState<AnalyticsTotals | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -60,6 +73,7 @@ export default function Home() {
       setAvailableAgents(agentsData);
       setByModel(analyticsData?.by_model || {});
       setPricingUpdated(analyticsData?.pricing_updated || "");
+      setAnalyticsTotals(analyticsData?.total || null);
       setLoading(false);
     }).catch(err => {
       console.error("Failed to fetch dashboard data:", err);
@@ -69,6 +83,9 @@ export default function Home() {
     const id = setInterval(load, 15000);
     return () => clearInterval(id);
   }, []);
+
+  // const measuredSessions = analyticsTotals?.quality?.measured_sessions ?? 0;
+  // const editTurns = analyticsTotals?.quality?.edit_turns ?? 0;
 
   const modelRows = Object.entries(byModel)
     .map(([name, s]) => ({ name, ...s }))
@@ -103,6 +120,50 @@ export default function Home() {
         <StatCard title="Active Projects" value={new Set(sessions.map(s => s.project)).size} icon={<Activity className="text-blue-400" />} color="blue" />
         <StatCard title="Cost Estimate" value={totalCost < 0.01 && totalCost > 0 ? "<$0.01" : `$${totalCost.toFixed(2)}`} subValue={pricingUpdated ? `Rates updated ${pricingUpdated}` : undefined} icon={<Zap className="text-amber-400" />} color="amber" />
       </div>
+
+      {/* Quality Signals */}
+      <section>
+        <div className="flex items-baseline justify-between mb-4 ml-1">
+          <h3 className="text-xs font-bold text-slate-500 uppercase tracking-[0.2em]">Quality Signals</h3>
+          <span className="text-[10px] font-mono text-slate-600">
+            Currently measured for Claude · more agents soon
+          </span>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <QualityCard
+            title="Cache Hit %"
+            scope="ALL AGENTS"
+            value={analyticsTotals?.cache_hit_pct ?? null}
+            tone="cyan"
+            icon={<Layers size={16} />}
+            barFraction={analyticsTotals?.cache_hit_pct ?? null}
+            footer="cached / (input + cached) tokens"
+            emptyHint="No token data yet"
+          />
+          {/* Quality signals cards commented out (not yet implemented)
+          <QualityCard
+            title="One-Shot Rate"
+            scope="CLAUDE"
+            value={null}
+            tone="emerald"
+            icon={<Target size={16} />}
+            barFraction={null}
+            footer="Edits succeeding without retry"
+            emptyHint="No Claude edit turns yet"
+          />
+          <QualityCard
+            title="Retry Rate"
+            scope="CLAUDE"
+            value={null}
+            tone="amber"
+            icon={<RotateCcw size={16} />}
+            barFraction={null}
+            footer="Failed edits retried by the model"
+            emptyHint="No Claude edit turns yet"
+          />
+          */}
+        </div>
+      </section>
 
       {/* Dynamic Agent Roster */}
       {availableAgents.length > 0 && (
@@ -144,6 +205,12 @@ export default function Home() {
                <div className="p-24 text-center text-slate-500 flex flex-col items-center gap-4">
                   <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-blue-500 mx-auto"></div>
                   <span className="font-mono text-xs uppercase tracking-widest text-slate-100">Parsing Log Streams...</span>
+               </div>
+            ) : sessions.length === 0 ? (
+               <div className="p-24 text-center text-slate-400 flex flex-col items-center gap-4">
+                  <Terminal size={48} className="text-slate-600 mb-2" />
+                  <h3 className="text-xl font-bold text-slate-300">No Agent Data Found</h3>
+                  <p className="text-sm max-w-md mx-auto text-slate-500">TokenTelemetry scans your local directories for agent activity. Start using your coding agents (Claude Code, Cursor, Copilot, etc.) to see telemetry data appear here.</p>
                </div>
             ) : (
                <div className="overflow-x-auto">
@@ -294,6 +361,73 @@ function StatCard({ title, value, icon, color, subValue }: { title: string; valu
         {subValue && <p className="text-[9px] font-mono text-slate-500 mt-1.5 italic">{subValue}</p>}
       </div>
       <div className="p-3 bg-slate-950/50 rounded-xl border border-slate-800 shadow-inner">{icon}</div>
+    </div>
+  );
+}
+
+type QualityTone = "cyan" | "emerald" | "amber";
+
+function QualityCard({
+  title,
+  scope,
+  value,
+  tone,
+  icon,
+  barFraction,
+  footer,
+  emptyHint,
+}: {
+  title: string;
+  scope: string;
+  value: number | null;
+  tone: QualityTone;
+  icon: React.ReactNode;
+  barFraction: number | null;
+  footer: string;
+  emptyHint: string;
+}) {
+  const toneMap: Record<QualityTone, { border: string; bg: string; text: string; bar: string }> = {
+    cyan: { border: "border-cyan-500/20", bg: "bg-cyan-500/5", text: "text-cyan-300", bar: "bg-cyan-400" },
+    emerald: { border: "border-emerald-500/20", bg: "bg-emerald-500/5", text: "text-emerald-300", bar: "bg-emerald-400" },
+    amber: { border: "border-amber-500/20", bg: "bg-amber-500/5", text: "text-amber-300", bar: "bg-amber-400" },
+  };
+  const t = toneMap[tone];
+  const isClaude = scope.toUpperCase() === "CLAUDE";
+  const chipClass = isClaude
+    ? "border-orange-500/30 text-orange-300 bg-orange-500/10"
+    : "border-slate-700 text-slate-400 bg-slate-900";
+  const hasValue = value != null;
+  const display = hasValue ? `${(value! * 100).toFixed(value! >= 0.995 ? 0 : 1)}%` : "—";
+  const fillPct = Math.max(0, Math.min(1, barFraction ?? 0)) * 100;
+
+  return (
+    <div className={`p-6 rounded-2xl border shadow-xl flex flex-col gap-4 transition-all hover:border-slate-600 ${t.border} ${t.bg}`}>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <div className={`p-2 rounded-lg bg-slate-950/60 border border-slate-800 ${t.text}`}>{icon}</div>
+          <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">{title}</p>
+        </div>
+        <span className={`px-2 py-0.5 rounded-full border text-[8px] font-black uppercase tracking-widest ${chipClass}`}>
+          {scope}
+        </span>
+      </div>
+      <div className="flex items-baseline gap-3">
+        <p className={`text-4xl font-black tracking-tighter tabular-nums ${hasValue ? "text-white" : "text-slate-600"}`}>
+          {display}
+        </p>
+        {!hasValue && (
+          <span className="text-[9px] font-mono uppercase tracking-widest text-slate-600">awaiting data</span>
+        )}
+      </div>
+      <div className="h-1.5 bg-slate-950 rounded-full overflow-hidden border border-slate-800/50">
+        <div
+          className={`h-full transition-all ${hasValue ? t.bar : "bg-slate-800"}`}
+          style={{ width: `${hasValue ? fillPct : 0}%` }}
+        />
+      </div>
+      <p className="text-[9px] font-mono text-slate-500 italic">
+        {hasValue ? footer : emptyHint}
+      </p>
     </div>
   );
 }

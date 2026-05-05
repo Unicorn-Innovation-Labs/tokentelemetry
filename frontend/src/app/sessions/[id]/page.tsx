@@ -58,12 +58,21 @@ interface Step {
 function eventKind(evt: Event): StepKind {
   const type = evt.type;
   const role = evt.role || evt.message?.role;
-  
+  const payloadType = (evt.payload as any)?.type;
+
+  // Codex event_msg sub-types
+  if (type === "event_msg" && payloadType === "user_message") return "user";
+  if (type === "event_msg" && payloadType === "agent_message") return "assistant";
+  if (type === "event_msg" && payloadType === "agent_reasoning") return "reasoning";
+  if (type === "event_msg" && payloadType === "function_call_output") return "tool_result";
+  // Codex function_call_output as response_item
+  if (type === "response_item" && payloadType === "function_call_output") return "tool_result";
+
   if (type === "session_meta" || type === "event_msg" || type === "turn_context") return "meta";
-  if (type === "agent_reasoning" || evt.thoughts || evt.payload?.type === "reasoning" || type === "assistant_thinking") return "reasoning";
-  if (Array.isArray(evt.payload) && evt.payload.some((p: any) => p.kind === "thinking" || p.type === "thinking")) return "reasoning";
+  if (type === "agent_reasoning" || evt.thoughts || payloadType === "reasoning" || type === "assistant_thinking") return "reasoning";
+  if (Array.isArray(evt.payload) && (evt.payload as any[]).some((p: any) => p.kind === "thinking" || p.type === "thinking")) return "reasoning";
   if (role === "assistant" && Array.isArray(evt.message?.content) && evt.message.content.some((c: any) => c.type === "thinking" || c.type === "thought")) return "reasoning";
-  if (evt.toolCalls || evt.payload?.type === "function_call" || evt.payload?.type === "tool_use") return "tool";
+  if (evt.toolCalls || payloadType === "function_call" || payloadType === "tool_use") return "tool";
   if (role === "assistant" && Array.isArray(evt.message?.content) && evt.message.content.some((c: any) => c.type === "tool_use")) return "tool";
   if ((type === "user" || role === "user") && Array.isArray(evt.message?.content) && evt.message.content.some((c: any) => c.type === "tool_result")) return "tool_result";
   if (type === "user" || role === "user" || (type === "response_item" && evt.payload?.role === "user") || type === "request_item") return "user";
@@ -95,9 +104,13 @@ function stepLabel(evt: Event, kind: StepKind): string {
     if (evt.toolCalls?.[0]) return evt.toolCalls[0].name;
     const tu = Array.isArray(evt.message?.content) ? evt.message.content.find((c: any) => c.type === "tool_use") : null;
     if (tu) return tu.name;
-    if (evt.payload?.type === "function_call" || evt.payload?.type === "tool_use") return evt.payload.name;
+    if (evt.payload?.type === "function_call" || evt.payload?.type === "tool_use") return (evt.payload as any).name;
   }
   if (kind === "user") {
+    // Codex event_msg user_message
+    if (evt.type === "event_msg" && (evt.payload as any)?.type === "user_message") {
+      return ((evt.payload as any).message || "User Query").slice(0, 40);
+    }
     const c = evt.message?.content || evt.payload?.content;
     const text = Array.isArray(c) ? c.map((p: any) => p.text || p.input_text).filter(Boolean).join(" ") : (typeof c === "string" ? c : "");
     return (text || "User Query").slice(0, 40);
@@ -145,7 +158,7 @@ export default function SessionDetailPage() {
       fetch(`http://127.0.0.1:8000/sessions/${id}?agent=${agent}`)
         .then((res) => res.json())
         .then((data) => {
-          let evts = [];
+          let evts: any[] = [];
           if (agent === 'gemini' || agent === 'antigravity') {
             evts = (data.messages || []).map((m: any) => ({
               ...m,
@@ -153,6 +166,14 @@ export default function SessionDetailPage() {
             }));
           } else {
             evts = Array.isArray(data) ? data : [];
+          }
+          // Strip codex noise events that clutter the step index with no UX value
+          if (agent === 'codex') {
+            evts = evts.filter((e: any) => {
+              if (e.type === 'turn_context') return false;
+              if (e.type === 'event_msg' && e.payload?.type === 'token_count') return false;
+              return true;
+            });
           }
           setEvents(evts);
           setPlaybackIndex(evts.length);
@@ -1386,7 +1407,11 @@ function EventCard({ event, mode = "all", agent }: { event: any, mode?: "dialogu
               {renderTimestamp()}
             </div>
             <pre className="bg-slate-950 text-blue-300 p-5 rounded-xl text-[11px] overflow-x-auto font-mono border border-slate-800 shadow-inner">
-              {JSON.stringify(payload.arguments || payload.input || payload.parameters, null, 2)}
+              {(() => {
+                const raw = payload.arguments || payload.input || payload.parameters;
+                if (typeof raw === "string") { try { return JSON.stringify(JSON.parse(raw), null, 2); } catch { return raw; } }
+                return JSON.stringify(raw, null, 2);
+              })()}
             </pre>
           </div>
        );
@@ -1424,7 +1449,80 @@ function EventCard({ event, mode = "all", agent }: { event: any, mode?: "dialogu
     }
   }
 
-  // 10. SYSTEM METADATA
+  // 10. CODEX event_msg sub-types (user_message, agent_message, agent_reasoning, function_call_output)
+  if (type === "event_msg") {
+    const msgType = payload?.type;
+
+    if (msgType === "user_message" && payload?.message && mode !== "brain") {
+      parts.push(
+        <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl relative overflow-hidden group hover:border-slate-600 transition-all text-left">
+          <div className="absolute top-0 left-0 w-1 h-full bg-blue-600"></div>
+          <div className="flex justify-between items-start mb-4">
+            <div className="flex items-center gap-2 text-blue-400 font-black text-[10px] uppercase tracking-[0.2em]">
+              <User size={16} strokeWidth={3} /> User Prompt
+            </div>
+            {renderTimestamp()}
+          </div>
+          <div className="text-slate-200 whitespace-pre-wrap text-sm leading-relaxed font-medium">{payload.message}</div>
+        </div>
+      );
+    } else if (msgType === "agent_message" && payload?.message && mode !== "brain") {
+      parts.push(
+        <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl relative overflow-hidden group hover:border-slate-600 transition-all text-left">
+          <div className="absolute top-0 left-0 w-1 h-full bg-emerald-500"></div>
+          <div className="flex justify-between items-start mb-4">
+            <div className="flex items-center gap-2 text-emerald-400 font-black text-[10px] uppercase tracking-[0.2em]">
+              <MessageSquare size={16} strokeWidth={3} /> Agent Response
+            </div>
+            {renderTimestamp()}
+          </div>
+          <ResponseBody text={payload.message} />
+        </div>
+      );
+    } else if (msgType === "agent_reasoning" && payload?.text && mode !== "dialogue") {
+      parts.push(
+        <div className="bg-purple-500/5 border border-purple-500/20 rounded-2xl p-6 shadow-sm ml-4 border-l-4 border-l-purple-500/50 group">
+          <div className="flex justify-between items-start mb-3">
+            <div className="flex items-center gap-2 text-purple-400 font-bold text-xs uppercase tracking-widest">
+              <Brain size={16} /> Reasoning
+            </div>
+            {renderTimestamp()}
+          </div>
+          <div className="text-slate-400 whitespace-pre-wrap italic text-[11px] leading-relaxed font-mono opacity-80">{payload.text}</div>
+        </div>
+      );
+    } else if (msgType !== "user_message" && msgType !== "agent_message" && msgType !== "agent_reasoning" && msgType !== "token_count") {
+      // Generic event_msg badge (skip token_count noise)
+      parts.push(
+        <div className="bg-slate-900/30 border border-slate-800/50 rounded-xl p-4 text-[10px] text-slate-500 flex items-center gap-4 group hover:bg-slate-800/20 transition-all">
+          <Zap size={14} className="text-purple-500/50 group-hover:text-purple-400" />
+          <span className="font-bold text-slate-400 uppercase tracking-[0.2em]">{msgType}</span>
+        </div>
+      );
+    }
+  }
+
+  // 10b. Codex function_call_output (tool result)
+  if (type === "response_item" && payload?.type === "function_call_output" && mode !== "dialogue") {
+    const output = payload.output;
+    if (output !== undefined && output !== null) {
+      parts.push(
+        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl ml-8 group hover:border-emerald-500/30 transition-all">
+          <div className="flex justify-between items-start mb-4">
+            <div className="flex items-center gap-2 text-slate-500 font-bold text-xs uppercase tracking-widest group-hover:text-emerald-500">
+              <Terminal size={16} /> Tool Output
+            </div>
+            {renderTimestamp()}
+          </div>
+          <pre className="bg-slate-950 text-emerald-400 p-5 rounded-xl text-[11px] overflow-x-auto font-mono border border-slate-800 shadow-inner max-h-48 overflow-y-auto">
+            {typeof output === "string" ? output.slice(0, 2000) : JSON.stringify(output, null, 2).slice(0, 2000)}
+          </pre>
+        </div>
+      );
+    }
+  }
+
+  // 11. SYSTEM METADATA
   if (type === "session_meta") {
     parts.push(
       <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-2xl opacity-90 border-dashed">
@@ -1441,15 +1539,6 @@ function EventCard({ event, mode = "all", agent }: { event: any, mode?: "dialogu
               <span className="text-slate-300">{payload.model_provider}</span>
            </div>
         </div>
-      </div>
-    );
-  }
-
-  if (type === "event_msg") {
-    parts.push(
-      <div className="bg-slate-900/30 border border-slate-800/50 rounded-xl p-4 text-[10px] text-slate-500 flex items-center gap-4 group hover:bg-slate-800/20 transition-all">
-        <Zap size={14} className="text-purple-500/50 group-hover:text-purple-400" />
-        <span className="font-bold text-slate-400 uppercase tracking-[0.2em]">{payload?.type}</span>
       </div>
     );
   }

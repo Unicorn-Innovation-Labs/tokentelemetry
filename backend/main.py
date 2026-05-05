@@ -137,6 +137,11 @@ class Artifact(BaseModel):
     path: str
     type: str # 'video', 'image', 'document', 'terminal'
 
+# class QualityMetrics(BaseModel):
+#     edit_turns: int = 0
+#     retry_turns: int = 0
+#     measured: bool = False
+
 class Session(BaseModel):
     id: str
     agent: str
@@ -150,6 +155,9 @@ class Session(BaseModel):
     tokens: TokenUsage = TokenUsage()
     plans: List[PlanSnippet] = []
     artifacts: List[Artifact] = []
+    # quality: QualityMetrics = QualityMetrics()
+
+# EDIT_TOOLS: Set[str] = {"Edit", "MultiEdit", "Write", "NotebookEdit"}
 
 @app.get("/")
 async def root():
@@ -234,6 +242,8 @@ def _scan_sessions_sync():
                             sess["artifacts"].append({"name": mf.name, "path": str(mf), "type": "document"})
                 except: pass
 
+                # pending_edit_tool_ids: Set[str] = set()  # quality signals (commented out)
+                # prior_edit_failed = False
                 try:
                     with open(session_file, "r", encoding="utf-8", errors="replace") as f:
                         for line in f:
@@ -266,7 +276,27 @@ def _scan_sessions_sync():
                                         if "plan" in t_text.lower() and len(t_text) > 100:
                                             sess["has_plan"] = True
                                             sess["plans"].append({"session_id": sid, "agent": "claude", "timestamp": sess["timestamp"], "content": t_text})
-                            if data.get("type") == "user" and "/plan" in str(data.get("message", {}).get("content", "")): sess["has_plan"] = True
+                                # Quality signals (edit/retry tracking) commented out:
+                                # if this_turn_edit_ids:
+                                #     sess["quality"]["edit_turns"] += 1
+                                #     if prior_edit_failed:
+                                #         sess["quality"]["retry_turns"] += 1
+                                #     pending_edit_tool_ids = this_turn_edit_ids
+                                #     prior_edit_failed = False
+                            if data.get("type") == "user":
+                                u_msg = data.get("message", {})
+                                u_content = u_msg.get("content", "")
+                                if "/plan" in str(u_content):
+                                    sess["has_plan"] = True
+                                # Quality signals (retry chain tracking) commented out:
+                                # if isinstance(u_content, list):
+                                #     for it in u_content:
+                                #         if isinstance(it, dict) and it.get("type") == "tool_result":
+                                #             if it.get("tool_use_id") in pending_edit_tool_ids and it.get("is_error"):
+                                #                 prior_edit_failed = True
+                                # else:
+                                #     prior_edit_failed = False
+                                #     pending_edit_tool_ids = set()
                 except: continue
         sessions.extend(claude_sessions.values())
     # 2. Codex
@@ -353,18 +383,56 @@ def _scan_sessions_sync():
                 pj_data = json.load(f).get("projects", {})
                 gemini_slugs = set(pj_data.values())
                 gemini_slug_to_path = {v: k for k, v in pj_data.items()}
+
+            # Build SHA-256 reverse map: hash(project_path) -> project_path
+            # Antigravity stores sessions in ~/.gemini/tmp/{sha256(cwd)}/ directories.
+            import hashlib as _hashlib
+            _hash_to_path: Dict[str, str] = {}
+            for _p in pj_data.keys():
+                _hash_to_path[_hashlib.sha256(_p.encode()).hexdigest()] = _p
+            # Also scan common locations to resolve hashes for projects not in projects.json
+            _scan_roots = [HOME / "Documents" / "Developer", HOME / "Documents", HOME]
+            for _root in _scan_roots:
+                try:
+                    if not _root.is_dir(): continue
+                    for _child in _root.iterdir():
+                        if _child.is_dir():
+                            _cp = str(_child)
+                            _hash_to_path[_hashlib.sha256(_cp.encode()).hexdigest()] = _cp
+                except: pass
+
+            # Pre-collect all chat session IDs globally to prevent cross-dir duplicates in logs.json
+            _all_chat_sids: set = set()
+            for _td in (GEMINI_DIR / "tmp").glob("*"):
+                _cd = _td / "chats"
+                if _cd.is_dir():
+                    for _cf in _cd.glob("*.json"):
+                        try:
+                            _all_chat_sids.add(json.loads(_cf.read_text(encoding="utf-8", errors="replace")).get("sessionId") or "")
+                        except: pass
+            _all_log_sids: set = set()  # tracks log-only sessions added, prevents cross-dir duplication
+
             for tmp_dir in (GEMINI_DIR / "tmp").glob("*"):
                 if not tmp_dir.is_dir(): continue
                 slug = tmp_dir.name
+                # Compute project path and agent type unconditionally (used by both chat and logs scans)
+                _is_hash_slug = len(slug) >= 32 and slug not in gemini_slugs
+                agent_type = "antigravity" if _is_hash_slug else ("gemini" if slug in gemini_slugs else "antigravity")
+                if _is_hash_slug:
+                    _resolved = _hash_to_path.get(slug)
+                    project_path = apply_alias(_resolved if _resolved else f"System / {slug[:8]}")
+                else:
+                    project_path = apply_alias(gemini_slug_to_path.get(slug, f"System / {slug[:8]}"))
                 chat_dir = tmp_dir / "chats"
                 if chat_dir.exists():
-                    agent_type = "gemini" if slug in gemini_slugs else "antigravity"
-                    project_path = apply_alias(gemini_slug_to_path.get(slug, f"System / {slug[:8]}"))
                     for cf in chat_dir.glob("*.json"):
                         try:
                             with open(cf, "r", encoding="utf-8", errors="replace") as f:
                                 data = json.load(f); sid = data.get("sessionId")
                                 if not sid: continue
+                                # kind="main" means Gemini CLI; absent/other means Antigravity
+                                session_kind = data.get("kind")
+                                effective_agent = agent_type if session_kind == "main" else "antigravity"
                                 ts = _aware(datetime.fromisoformat(data.get("lastUpdated").replace('Z', '+00:00'))) if data.get("lastUpdated") else _now()
                                 tokens = {"input": 0, "output": 0, "cached": 0, "total": 0}
                                 mcp_tools = []; has_plan = False; first_msg = ""; plans = []
@@ -394,17 +462,17 @@ def _scan_sessions_sync():
                                                     plan_text = (tc.get("args") or {}).get("plan") or tc.get("resultDisplay") or ""
                                                 if plan_text:
                                                     has_plan = True
-                                                    plans.append({"session_id": sid, "agent": agent_type, "timestamp": ts, "content": plan_text})
-                                
+                                                    plans.append({"session_id": sid, "agent": effective_agent, "timestamp": ts, "content": plan_text})
+
                                 # Skip "ghost" sessions
                                 if not has_user and tokens["total"] == 0 and not mcp_tools:
                                     continue
-                                    
+
                                 model = None
                                 for msg in data.get("messages", []):
                                     if msg.get("model"): model = msg.get("model"); break
                                     if msg.get("modelVersion"): model = msg.get("modelVersion"); break
-                                
+
                                 # Discover Antigravity chat-level media artifacts
                                 artifacts = []
                                 try:
@@ -416,8 +484,41 @@ def _scan_sessions_sync():
                                 except: pass
 
                                 tokens["cost"] = calculate_cost(model, tokens["input"], tokens["output"], tokens["cached"])
-                                sessions.append({"id": sid, "agent": agent_type, "project": project_path, "timestamp": ts, "display": first_msg[:100], "tokens": tokens, "mcp_tools": mcp_tools, "has_plan": has_plan, "plans": plans, "model": model, "artifacts": artifacts, "cost": tokens["cost"]})
+                                sessions.append({"id": sid, "agent": effective_agent, "project": project_path, "timestamp": ts, "display": first_msg[:100], "tokens": tokens, "mcp_tools": mcp_tools, "has_plan": has_plan, "plans": plans, "model": model, "artifacts": artifacts, "cost": tokens["cost"]})
                         except: continue
+                # Scan logs.json for Antigravity sessions that have no chat JSON file
+                _logs_file = tmp_dir / "logs.json"
+                if _logs_file.exists():
+                    try:
+                        _logs = json.loads(_logs_file.read_text(encoding="utf-8", errors="replace"))
+                        _session_msgs: Dict[str, list] = {}
+                        _session_last_ts: Dict[str, str] = {}
+                        for _le in _logs:
+                            _lsid = _le.get("sessionId")
+                            if not _lsid or _lsid in _all_chat_sids: continue
+                            _session_last_ts[_lsid] = _le.get("timestamp", "")
+                            if _le.get("type") == "user":
+                                if _lsid not in _session_msgs: _session_msgs[_lsid] = []
+                                _session_msgs[_lsid].append(_le)
+                        for _lsid, _msgs in _session_msgs.items():
+                            if not _msgs or _lsid in _all_log_sids: continue
+                            _first_msg = _msgs[0].get("message", "")
+                            _last_ts_str = _session_last_ts.get(_lsid, "")
+                            try: _lts = _aware(datetime.fromisoformat(_last_ts_str.replace('Z', '+00:00')))
+                            except: _lts = _now()
+                            _plans = []; _has_plan = False
+                            _plan_dir = tmp_dir / _lsid / "plans"
+                            if _plan_dir.exists():
+                                for _pf in sorted(_plan_dir.glob("*.md")):
+                                    try:
+                                        _pt = _pf.read_text(encoding="utf-8", errors="replace")
+                                        _has_plan = True
+                                        _plans.append({"session_id": _lsid, "agent": "antigravity", "timestamp": _lts, "content": _pt})
+                                    except: pass
+                            _tkns = {"input": 0, "output": 0, "cached": 0, "total": 0, "cost": 0.0}
+                            sessions.append({"id": _lsid, "agent": "antigravity", "project": project_path, "timestamp": _lts, "display": _first_msg[:100], "tokens": _tkns, "mcp_tools": [], "has_plan": _has_plan, "plans": _plans, "model": None, "artifacts": [], "cost": 0.0})
+                            _all_log_sids.add(_lsid)
+                    except: pass
         except: pass
 
     # 3b. Antigravity brain/ folder — richer per-session artifacts (task/plan/walkthrough)
@@ -1194,9 +1295,36 @@ async def post_aliases(aliases: Dict[str, str]):
     _invalidate_sessions_cache()
     return {"ok": True, "aliases": cleaned}
 
+# def _quality_summary(edit_turns: int, retry_turns: int, measured_sessions: int) -> Dict[str, Any]:
+#     if edit_turns > 0:
+#         retry_rate = retry_turns / edit_turns
+#         one_shot_rate = 1.0 - retry_rate
+#     else:
+#         retry_rate = None
+#         one_shot_rate = None
+#     return {
+#         "edit_turns": edit_turns,
+#         "retry_turns": retry_turns,
+#         "one_shot_rate": one_shot_rate,
+#         "retry_rate": retry_rate,
+#         "measured_sessions": measured_sessions,
+#     }
+
+
+def _cache_hit_pct(input_tokens: int, cached_tokens: int) -> Optional[float]:
+    denom = input_tokens + cached_tokens
+    if denom <= 0:
+        return None
+    return cached_tokens / denom
+
+
 @app.get("/analytics")
 async def get_analytics():
     sessions = await get_sessions_cached(); by_agent = {}; by_day = {}; by_model = {}
+    # quality_by_agent: Dict[str, Dict[str, int]] = {}
+    # total_edit_turns = 0
+    # total_retry_turns = 0
+    # total_measured_sessions = 0
     for s in sessions:
         agent = s["agent"]
         if agent not in by_agent: by_agent[agent] = {"input": 0, "output": 0, "cached": 0, "total": 0, "cost": 0.0, "session_count": 0}
@@ -1215,17 +1343,38 @@ async def get_analytics():
         if day not in by_day: by_day[day] = {"total": 0, "input": 0, "output": 0, "cached": 0, "cost": 0.0}
         for k in ["input", "output", "cached", "total"]: by_day[day][k] += st.get(k, 0)
         by_day[day]["cost"] += scost
+        # q = s.get("quality") or {}
+        # if q.get("measured"):
+        #     agg = quality_by_agent.setdefault(agent, {"edit_turns": 0, "retry_turns": 0, "measured_sessions": 0})
+        #     agg["edit_turns"] += q.get("edit_turns", 0)
+        #     agg["retry_turns"] += q.get("retry_turns", 0)
+        #     agg["measured_sessions"] += 1
+        #     total_edit_turns += q.get("edit_turns", 0)
+        #     total_retry_turns += q.get("retry_turns", 0)
+        #     total_measured_sessions += 1
+    for agent, row in by_agent.items():
+        row["cache_hit_pct"] = _cache_hit_pct(row["input"], row["cached"])
+        # agg = quality_by_agent.get(agent)
+        # if agg:
+        #     row["quality"] = _quality_summary(agg["edit_turns"], agg["retry_turns"], agg["measured_sessions"])
+        # else:
+        #     row["quality"] = _quality_summary(0, 0, 0)
     sorted_days = sorted([{"date": d, **v} for d, v in by_day.items()], key=lambda x: x["date"])
+    total_input = sum(a["input"] for a in by_agent.values())
+    total_output = sum(a["output"] for a in by_agent.values())
+    total_cached = sum(a["cached"] for a in by_agent.values())
     return {
-        "by_agent": by_agent, 
-        "by_day": sorted_days, 
-        "by_model": by_model, 
+        "by_agent": by_agent,
+        "by_day": sorted_days,
+        "by_model": by_model,
         "total": {
-            "input": sum(a["input"] for a in by_agent.values()), 
-            "output": sum(a["output"] for a in by_agent.values()), 
-            "cached": sum(a["cached"] for a in by_agent.values()), 
+            "input": total_input,
+            "output": total_output,
+            "cached": total_cached,
             "total": sum(a["total"] for a in by_agent.values()),
-            "cost": sum(a["cost"] for a in by_agent.values())
+            "cost": sum(a["cost"] for a in by_agent.values()),
+            "cache_hit_pct": _cache_hit_pct(total_input, total_cached),
+            # "quality": _quality_summary(total_edit_turns, total_retry_turns, total_measured_sessions),
         },
         "pricing_updated": PRICING_UPDATED,
     }
