@@ -7,6 +7,14 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
   const [isCollapsed, setIsCollapsed] = useState(false);
 
   useEffect(() => {
+    // URL override (e.g. ?sidebar=collapsed) wins over localStorage — useful for
+    // screenshots and embedded views.
+    const params = new URLSearchParams(window.location.search);
+    const fromUrl = params.get("sidebar");
+    if (fromUrl === "collapsed" || fromUrl === "expanded") {
+      setIsCollapsed(fromUrl === "collapsed");
+      return;
+    }
     const saved = localStorage.getItem("sidebar-collapsed");
     if (saved) setIsCollapsed(saved === "true");
   }, []);
