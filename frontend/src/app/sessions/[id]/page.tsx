@@ -180,6 +180,26 @@ export default function SessionDetailPage() {
               return true;
             });
           }
+          // Antigravity log-only sessions return { error: "Not found" } from the detail endpoint —
+          // surface that upstream as an empty trace so the empty-state renders instead of a broken viewer.
+          if (data && typeof data === 'object' && !Array.isArray(data) && data.error) {
+            evts = [];
+          }
+          // Strip Claude / Cursor noise events that don't render meaningful trace UI
+          if (agent === 'claude' || agent === 'cursor') {
+            const NOISE_TYPES = new Set([
+              'last-prompt', 'permission-mode', 'ai-title', 'file-history-snapshot',
+              'queue-operation', 'attachment', 'system',
+            ]);
+            evts = evts.filter((e: any) => {
+              if (NOISE_TYPES.has(e.type)) return false;
+              // Drop synthetic local-command echo pings
+              if (e.type === 'user' && e.isMeta) return false;
+              const c = e.message?.content;
+              if (e.type === 'user' && typeof c === 'string' && c.startsWith('<local-command-')) return false;
+              return true;
+            });
+          }
           setEvents(evts);
           setPlaybackIndex(evts.length);
           setLoading(false)
@@ -523,6 +543,22 @@ export default function SessionDetailPage() {
             <Skeleton className="h-24 w-full" />
           </div>
           <span className="text-[11px] uppercase tracking-[0.18em] text-[var(--tt-fg-dim)]">Loading session trace…</span>
+        </div>
+      ) : events.length === 0 ? (
+        <div className="flex-1 flex items-center justify-center p-12">
+          <div className="max-w-md text-center space-y-4">
+            <div className="inline-flex items-center justify-center w-12 h-12 rounded-[var(--tt-radius-lg)] bg-[var(--tt-panel)] border border-[var(--tt-border)] text-[var(--tt-fg-dim)]">
+              <Info size={20} />
+            </div>
+            <div>
+              <h2 className="text-[15px] font-semibold text-[var(--tt-fg)] mb-1">No trace available</h2>
+              <p className="text-[12px] text-[var(--tt-fg-muted)] leading-relaxed">
+                {agent === "antigravity"
+                  ? "Antigravity sessions are tracked from log metadata only — TokenTelemetry doesn't capture per-step events for this agent. Aggregate stats still appear in Insights and Analytics."
+                  : "This session was registered but no per-step events were found in the local log. The session metadata still appears in Insights and Analytics."}
+              </p>
+            </div>
+          </div>
         </div>
       ) : (
         <main className={`flex-1 w-full max-w-[1800px] mx-auto grid min-h-0 ${sidebarOpen ? "grid-cols-[240px_1fr_380px]" : "grid-cols-[240px_1fr_40px]"}`}>

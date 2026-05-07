@@ -92,12 +92,6 @@ cd tokentelemetry
 # node bin/cli.js # cross-platform
 ```
 
-### Option 3: npx (no install)
-
-```bash
-npx tokentelemetry
-```
-
 Then open: **http://localhost:3000**
 
 ---

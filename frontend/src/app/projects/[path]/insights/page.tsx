@@ -131,13 +131,13 @@ export default function InsightsTab() {
         <StatTile label="Total tokens" value={totalTokens.toLocaleString()} icon={<Sparkles size={16} />} accent="#a855f7" />
       </div>
 
-      {/* Per-agent heatmap */}
+      {/* Combined activity heatmap */}
       <Card padding="lg">
         <CardHeader>
           <div>
-            <CardTitle><Activity size={14} className="text-[var(--tt-brand)]" /> Activity heatmap — per agent</CardTitle>
+            <CardTitle><Activity size={14} className="text-[var(--tt-brand)]" /> Activity heatmap</CardTitle>
             <p className="text-[11px] text-[var(--tt-fg-dim)] mt-0.5">
-              Last 365 days. Intensity scales within each agent so quiet agents stay visible.
+              Last 365 days. Each cell colored by the dominant agent that day, intensity by {heatMetric}.
             </p>
           </div>
           <div className="flex items-center rounded-[var(--tt-radius)] border border-[var(--tt-border)] bg-[var(--tt-panel)] overflow-hidden">
@@ -158,50 +158,43 @@ export default function InsightsTab() {
           </div>
         </CardHeader>
 
-        <div className="space-y-5">
-          {insights.perAgent.map(({ agent, stats, arr, max, maxTok }) => {
-            const weeks = buildWeeks(arr, insights.start);
-            const meta = getAgent(agent);
-            const denom = heatMetric === "sessions" ? max : maxTok;
-            return (
-              <div key={agent}>
-                <div className="flex items-center justify-between mb-2">
-                  <div className="flex items-center gap-2">
-                    <span className="w-1.5 h-1.5 rounded" style={{ backgroundColor: meta.hex }} />
-                    <span className="text-[11px] font-semibold uppercase tracking-[0.16em]" style={{ color: meta.hex }}>
+        <CombinedHeatmap
+          dailyArr={insights.dailyArr}
+          start={insights.start}
+          metric={heatMetric}
+        />
+
+        {/* Per-agent compact sparkline strip */}
+        {insights.perAgent.length > 0 && (
+          <div className="mt-6 pt-5 border-t border-[var(--tt-border)] space-y-2.5">
+            <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[var(--tt-fg-dim)] mb-2">
+              Per-agent activity
+            </div>
+            {insights.perAgent.map(({ agent, stats, arr, max, maxTok }) => {
+              const meta = getAgent(agent);
+              const denom = heatMetric === "sessions" ? max : maxTok;
+              return (
+                <div key={agent} className="grid grid-cols-[120px_1fr_auto] items-center gap-3">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="w-1.5 h-1.5 rounded shrink-0" style={{ backgroundColor: meta.hex }} />
+                    <span className="text-[11px] font-semibold uppercase tracking-[0.14em] truncate" style={{ color: meta.hex }}>
                       {meta.label}
                     </span>
                   </div>
-                  <span className="tabular text-[10px] text-[var(--tt-fg-dim)]">
+                  <Sparkline
+                    arr={arr}
+                    metric={heatMetric}
+                    denom={denom}
+                    color={meta.hex}
+                  />
+                  <span className="tabular text-[10px] text-[var(--tt-fg-dim)] whitespace-nowrap">
                     {stats.count} sess · {fmtNum(stats.tokens)} tok
                   </span>
                 </div>
-                <div className="overflow-x-auto pb-1">
-                  <div className="flex gap-[2px]" style={{ minWidth: weeks.length * 11 }}>
-                    {weeks.map((wk, wi) => (
-                      <div key={wi} className="flex flex-col gap-[2px]">
-                        {wk.map((d, di) => {
-                          const val = d ? (heatMetric === "sessions" ? d.count : d.tokens) : 0;
-                          const intensity = val > 0 ? Math.max(0.18, val / (denom || 1)) : 0;
-                          return (
-                            <div
-                              key={di}
-                              title={d ? `${d.count} sessions · ${fmtNum(d.tokens)} tokens` : ""}
-                              className="w-[10px] h-[10px] rounded-[2px]"
-                              style={{
-                                backgroundColor: intensity > 0 ? hexWithAlpha(meta.hex, intensity) : "var(--tt-empty-cell)",
-                              }}
-                            />
-                          );
-                        })}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
+              );
+            })}
+          </div>
+        )}
       </Card>
 
       {/* Leaderboard + migration ribbon */}
@@ -356,12 +349,16 @@ function MigrationRibbon({
   );
 }
 
-function buildWeeks(arr: { count: number; tokens: number }[], start: Date) {
-  const weeks: ({ count: number; tokens: number } | null)[][] = [];
-  let cur: ({ count: number; tokens: number } | null)[] = [];
+type DayBucket = { date: string; count: number; tokens: number; byAgent: Record<string, number> };
+
+function CombinedHeatmap({
+  dailyArr, start, metric,
+}: { dailyArr: DayBucket[]; start: Date; metric: "sessions" | "tokens" }) {
+  const weeks: (DayBucket | null)[][] = [];
+  let cur: (DayBucket | null)[] = [];
   const offset = new Date(start).getDay();
   for (let i = 0; i < offset; i++) cur.push(null);
-  for (const d of arr) {
+  for (const d of dailyArr) {
     cur.push(d);
     if (cur.length === 7) { weeks.push(cur); cur = []; }
   }
@@ -369,7 +366,130 @@ function buildWeeks(arr: { count: number; tokens: number }[], start: Date) {
     while (cur.length < 7) cur.push(null);
     weeks.push(cur);
   }
-  return weeks;
+
+  const denom = Math.max(
+    1,
+    ...dailyArr.map((d) => (metric === "sessions" ? d.count : d.tokens)),
+  );
+
+  // Month labels: column index of first week of each month
+  const monthLabels: { col: number; label: string }[] = [];
+  let lastMonth = -1;
+  weeks.forEach((wk, wi) => {
+    const firstReal = wk.find((d) => d) as DayBucket | undefined;
+    if (!firstReal) return;
+    const m = new Date(firstReal.date + "T00:00").getMonth();
+    if (m !== lastMonth) {
+      monthLabels.push({ col: wi, label: ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][m] });
+      lastMonth = m;
+    }
+  });
+
+  const dowLabels = ["", "Mon", "", "Wed", "", "Fri", ""];
+
+  return (
+    <div className="overflow-x-auto pb-1">
+      <div className="inline-block">
+        {/* Month label row */}
+        <div className="grid gap-[3px] mb-1.5 ml-[28px]" style={{ gridTemplateColumns: `repeat(${weeks.length}, 12px)` }}>
+          {weeks.map((_, wi) => {
+            const lbl = monthLabels.find((m) => m.col === wi);
+            return (
+              <div key={wi} className="text-[9px] font-mono text-[var(--tt-fg-faint)] uppercase tracking-[0.1em] h-3">
+                {lbl?.label ?? ""}
+              </div>
+            );
+          })}
+        </div>
+        <div className="flex gap-2">
+          {/* DOW labels */}
+          <div className="flex flex-col gap-[3px] pt-[1px]">
+            {dowLabels.map((l, i) => (
+              <div key={i} className="h-[12px] text-[9px] font-mono text-[var(--tt-fg-faint)] flex items-center">
+                {l}
+              </div>
+            ))}
+          </div>
+          <div className="flex gap-[3px]">
+            {weeks.map((wk, wi) => (
+              <div key={wi} className="flex flex-col gap-[3px]">
+                {wk.map((d, di) => {
+                  if (!d) return <div key={di} className="w-[12px] h-[12px]" />;
+                  const val = metric === "sessions" ? d.count : d.tokens;
+                  const intensity = val > 0 ? Math.max(0.22, val / denom) : 0;
+                  const top = Object.entries(d.byAgent).sort((a, b) => b[1] - a[1])[0]?.[0];
+                  const hex = top ? getAgent(top).hex : "#60a5fa";
+                  return (
+                    <div
+                      key={di}
+                      title={d ? `${d.date} · ${d.count} sessions · ${fmtNum(d.tokens)} tokens` : ""}
+                      className="w-[12px] h-[12px] rounded-[3px] transition-colors"
+                      style={{
+                        backgroundColor: intensity > 0 ? hexWithAlpha(hex, intensity) : "var(--tt-empty-cell)",
+                        outline: intensity > 0 ? "1px solid rgba(255,255,255,0.04)" : "none",
+                      }}
+                    />
+                  );
+                })}
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="flex items-center justify-end gap-2 mt-3 text-[10px] text-[var(--tt-fg-dim)]">
+          <span className="italic opacity-60">less</span>
+          <span className="flex gap-[2px]">
+            {[0, 0.25, 0.5, 0.75, 1].map((x) => (
+              <span
+                key={x}
+                className="w-[12px] h-[12px] rounded-[3px]"
+                style={{ backgroundColor: x === 0 ? "var(--tt-empty-cell)" : hexWithAlpha("#60a5fa", x) }}
+              />
+            ))}
+          </span>
+          <span className="italic opacity-60">more</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Sparkline({
+  arr, metric, denom, color,
+}: { arr: { count: number; tokens: number }[]; metric: "sessions" | "tokens"; denom: number; color: string }) {
+  const W = 100;
+  const H = 22;
+  const n = arr.length;
+  if (n === 0) return <div className="h-[22px]" />;
+  const step = W / Math.max(1, n - 1);
+  const pts = arr
+    .map((d, i) => {
+      const v = metric === "sessions" ? d.count : d.tokens;
+      const y = H - (v / (denom || 1)) * (H - 2) - 1;
+      return `${(i * step).toFixed(2)},${y.toFixed(2)}`;
+    })
+    .join(" ");
+  return (
+    <svg
+      viewBox={`0 0 ${W} ${H}`}
+      preserveAspectRatio="none"
+      className="w-full h-[22px] block"
+      aria-hidden
+    >
+      <polyline
+        points={`0,${H} ${pts} ${W},${H}`}
+        fill={hexWithAlpha(color, 0.18)}
+        stroke="none"
+      />
+      <polyline
+        points={pts}
+        fill="none"
+        stroke={color}
+        strokeWidth={1}
+        strokeLinejoin="round"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
 }
 
 function hexWithAlpha(hex: string, alpha: number) {

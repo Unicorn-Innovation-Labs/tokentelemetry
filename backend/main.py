@@ -1050,17 +1050,68 @@ async def get_session_detail(session_id: str, agent: str):
                 "messages": messages,
             }
         files = list((GEMINI_DIR / "tmp").glob(f"**/chats/session-*{session_id[:8]}*.json")) or list((GEMINI_DIR / "tmp").glob(f"**/chats/*{session_id}*.json"))
-        if not files: return {"error": "Not found"}
-        with open(files[0], "r", encoding="utf-8", errors="replace") as f:
-            data = json.load(f)
-            # Add normalized_timestamp to messages
-            for msg in data.get("messages", []):
-                if msg.get("timestamp"):
-                    try:
-                        ts = _aware(datetime.fromisoformat(msg["timestamp"].replace('Z', '+00:00')))
-                        msg["normalized_timestamp"] = ts.timestamp() * 1000
-                    except: pass
-            return data
+        if files:
+            with open(files[0], "r", encoding="utf-8", errors="replace") as f:
+                data = json.load(f)
+                # Add normalized_timestamp to messages
+                for msg in data.get("messages", []):
+                    if msg.get("timestamp"):
+                        try:
+                            ts = _aware(datetime.fromisoformat(msg["timestamp"].replace('Z', '+00:00')))
+                            msg["normalized_timestamp"] = ts.timestamp() * 1000
+                        except: pass
+                return data
+        # Antigravity log-only sessions: synthesize messages from the per-tmp-dir
+        # logs.json that records every user/assistant turn with its sessionId.
+        if agent == "antigravity":
+            log_messages = []
+            log_base_ts = None
+            for log_file in (GEMINI_DIR / "tmp").glob("*/logs.json"):
+                try:
+                    log_entries = json.loads(log_file.read_text(encoding="utf-8", errors="replace"))
+                except Exception:
+                    continue
+                if not isinstance(log_entries, list):
+                    continue
+                matched = [e for e in log_entries if e.get("sessionId") == session_id]
+                if not matched:
+                    continue
+                for i, e in enumerate(matched):
+                    raw_role = (e.get("type") or "").lower()
+                    if raw_role in ("user", "human"):
+                        role = "user"
+                        content = [{"type": "text", "text": e.get("message", "")}]
+                    else:
+                        # Anything not a user turn renders as the assistant ("gemini") side.
+                        role = "gemini"
+                        content = e.get("message", "")
+                    msg = {
+                        "id": f"{session_id}-{e.get('messageId', i)}",
+                        "type": role,
+                        "role": role,
+                        "content": content,
+                    }
+                    ts_str = e.get("timestamp")
+                    if ts_str:
+                        try:
+                            ts = _aware(datetime.fromisoformat(ts_str.replace('Z', '+00:00')))
+                            ts_ms = ts.timestamp() * 1000
+                            msg["normalized_timestamp"] = ts_ms
+                            msg["timestamp"] = ts_str
+                            log_base_ts = log_base_ts or ts_ms
+                        except Exception:
+                            pass
+                    log_messages.append(msg)
+                # Found the session in this logs.json — no need to scan further.
+                break
+            if log_messages:
+                return {
+                    "sessionId": session_id,
+                    "projectHash": "",
+                    "kind": "antigravity_logs",
+                    "messages": log_messages,
+                }
+        return {"error": "Not found"}
     elif agent == "qwen":
         files = list(QWEN_DIR.glob(f"projects/**/chats/{session_id}.jsonl"))
         if not files: return {"error": "Not found"}
