@@ -28,10 +28,10 @@ export const FAQ_ITEMS = [
 export default function FAQ() {
   return (
     <section id="faq" className="border-t border-[var(--tt-border)]">
-      <div className="max-w-3xl mx-auto px-5 sm:px-8 py-20 sm:py-28">
-        <div className="text-center mb-10">
+      <div className="max-w-3xl mx-auto px-5 sm:px-8 py-14 sm:py-28">
+        <div className="text-center mb-8 sm:mb-10">
           <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--tt-fg-dim)] mb-3">FAQ</p>
-          <h2 className="text-[30px] sm:text-[38px] leading-[1.1] tracking-[-0.02em] font-semibold text-[var(--tt-fg)]">
+          <h2 className="text-[26px] sm:text-[38px] leading-[1.1] tracking-[-0.02em] font-semibold text-[var(--tt-fg)]">
             Common questions
           </h2>
         </div>

@@ -32,8 +32,8 @@ export default function Hero() {
 
   return (
     <section className="relative overflow-hidden">
-      <div className="max-w-[1320px] mx-auto px-5 sm:px-8 pt-16 sm:pt-24 pb-10 sm:pb-16">
-        <div className="grid lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] lg:gap-12 lg:items-center">
+      <div className="max-w-[1320px] mx-auto px-5 sm:px-8 pt-12 sm:pt-24 pb-8 sm:pb-16">
+        <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] lg:gap-12 lg:items-center">
           {/* Left column — copy + install */}
           <div className="lg:text-left text-center">
             {/* Eyebrow */}
@@ -52,7 +52,7 @@ export default function Hero() {
             </div>
 
             {/* Headline */}
-            <h1 className="text-[40px] sm:text-[52px] lg:text-[58px] xl:text-[64px] leading-[1.04] tracking-[-0.025em] font-semibold text-[var(--tt-fg)] mb-5 max-w-4xl mx-auto lg:mx-0">
+            <h1 className="text-[32px] sm:text-[52px] lg:text-[58px] xl:text-[64px] leading-[1.08] sm:leading-[1.04] tracking-[-0.025em] font-semibold text-[var(--tt-fg)] mb-5 max-w-4xl mx-auto lg:mx-0">
               See exactly what your{" "}
               <span className="text-[var(--tt-brand)]">coding agents</span>{" "}
               cost, think, and do.

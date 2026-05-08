@@ -2,13 +2,13 @@ import { AGENTS } from "@/data/agents";
 
 export default function AgentsGrid() {
   return (
-    <section id="agents" className="max-w-[1320px] mx-auto px-5 sm:px-8 py-24">
-      <div className="text-center mb-12">
+    <section id="agents" className="max-w-[1320px] mx-auto px-5 sm:px-8 py-16 sm:py-24">
+      <div className="text-center mb-10 sm:mb-12">
         <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--tt-fg-dim)] mb-3">Supported</p>
-        <h2 className="text-[34px] sm:text-[44px] leading-[1.05] tracking-[-0.02em] font-semibold text-[var(--tt-fg)] mb-4">
+        <h2 className="text-[28px] sm:text-[44px] leading-[1.1] tracking-[-0.02em] font-semibold text-[var(--tt-fg)] mb-4">
           Nine agents. <span className="text-[var(--tt-brand)]">Zero config.</span>
         </h2>
-        <p className="text-[15px] text-[var(--tt-fg-muted)] max-w-2xl mx-auto leading-relaxed">
+        <p className="text-[14px] sm:text-[15px] text-[var(--tt-fg-muted)] max-w-2xl mx-auto leading-relaxed">
           TokenTelemetry reads logs your agents already write. No proxies, no wrappers, no SDK to register.
         </p>
       </div>

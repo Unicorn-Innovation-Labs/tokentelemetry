@@ -9,8 +9,8 @@ const ITEMS = [
 export default function TrustStrip() {
   return (
     <section className="border-t border-[var(--tt-border)]">
-      <div className="max-w-[1320px] mx-auto px-5 sm:px-8 py-20">
-        <div className="grid md:grid-cols-3 gap-6 mb-14">
+      <div className="max-w-[1320px] mx-auto px-5 sm:px-8 py-14 sm:py-20">
+        <div className="grid md:grid-cols-3 gap-4 sm:gap-6 mb-10 sm:mb-14">
           {ITEMS.map(({ icon: Icon, title, body }) => (
             <div
               key={title}
