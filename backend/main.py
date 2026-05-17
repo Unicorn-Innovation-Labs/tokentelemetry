@@ -8,7 +8,7 @@ import sqlite3
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Set
 from pydantic import BaseModel
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from urllib.parse import unquote
 
 from harness_config import (
@@ -1310,109 +1310,9 @@ def _scan_sessions_sync():
         except Exception:
             pass
 
-    # Demo-mode injection — populates a few realistic-looking Hermes sessions
-    # so the /hermes dashboard isn't empty for screenshots / first-run demos.
-    # Activate by setting TT_DEMO=1. Never touches ~/.hermes.
-    if os.environ.get("TT_DEMO") == "1":
-        sessions.extend(_demo_hermes_sessions())
-
     # Global sort by timestamp descending
     sessions.sort(key=lambda x: x["timestamp"], reverse=True)
     return sessions
-
-
-def _demo_hermes_sessions() -> List[Dict[str, Any]]:
-    """Inline demo fixtures — never persisted, never touch ~/.hermes."""
-    now = datetime.now(tz=timezone.utc)
-    h = lambda mins: now - timedelta(minutes=mins)
-    base = [
-        {
-            "id": "demo_telegram_pr_digest", "source_subtype": "telegram",
-            "project": "/Users/demo/Documents/agent-harness",
-            "display": "Daily PR digest for engineering channel — 4 PRs, 2 blocked on review",
-            "model": "claude-sonnet-4-6", "billing_provider": "anthropic",
-            "minutes_ago": 14,
-            "tokens": {"input": 89_400, "output": 4_120, "cached": 78_220, "reasoning": 0, "total": 171_740},
-            "cost": 0.341, "cost_anomaly": False, "mcp_tools": ["terminal", "memory", "session_search"],
-        },
-        {
-            "id": "demo_cron_morning_brief", "source_subtype": "cron",
-            "project": "unknown",
-            "display": "Morning briefing — calendar, GitHub, weather, top inbox",
-            "model": "claude-haiku-4-5", "billing_provider": "anthropic",
-            "minutes_ago": 380,
-            "tokens": {"input": 24_300, "output": 1_840, "cached": 22_100, "reasoning": 0, "total": 48_240},
-            "cost": 0.0276, "cost_anomaly": False, "mcp_tools": ["terminal", "memory", "text_to_speech"],
-        },
-        {
-            "id": "demo_cli_hermes_internals", "source_subtype": "cli",
-            "project": "/Users/demo/Documents/feature-design-revamp",
-            "display": "let's check on hermes agent — read the v0.14 changelog and summarise",
-            "model": "claude-haiku-4.5", "billing_provider": "copilot",
-            "minutes_ago": 38,
-            "tokens": {"input": 33_366, "output": 537, "cached": 32_564, "reasoning": 0, "total": 66_467},
-            "cost": 0.029, "cost_anomaly": False, "mcp_tools": ["skill_view", "terminal", "patch"],
-        },
-        {
-            "id": "demo_discord_help", "source_subtype": "discord",
-            "project": "unknown",
-            "display": "answered #help: How do I configure Hermes profiles per project?",
-            "model": "gemini-2.5-flash", "billing_provider": "google",
-            "minutes_ago": 92,
-            "tokens": {"input": 4_120, "output": 940, "cached": 0, "reasoning": 0, "total": 5_060},
-            "cost": 0.0036, "cost_anomaly": False, "mcp_tools": ["session_search", "memory"],
-        },
-        {
-            "id": "demo_slack_oncall", "source_subtype": "slack",
-            "project": "unknown",
-            "display": "oncall ping: prod latency spike at 13:02 UTC — investigating",
-            "model": "claude-opus-4-7", "billing_provider": "anthropic",
-            "minutes_ago": 720,
-            "tokens": {"input": 12_440, "output": 2_870, "cached": 0, "reasoning": 0, "total": 15_310},
-            "cost": 0.134, "cost_anomaly": False, "mcp_tools": ["terminal", "browser_navigate", "memory"],
-        },
-        {
-            "id": "demo_feishu_meeting_notes", "source_subtype": "feishu",
-            "project": "unknown",
-            "display": "会议纪要 — Q2 roadmap planning sync, 12 action items extracted",
-            "model": "kimi-k2.6", "billing_provider": "moonshot",
-            "minutes_ago": 1240,
-            "tokens": {"input": 8_900, "output": 1_240, "cached": 0, "reasoning": 0, "total": 10_140},
-            "cost": 0.0134, "cost_anomaly": False, "mcp_tools": ["session_search"],
-        },
-        {
-            "id": "demo_cli_mimo_waste", "source_subtype": "cli",
-            "project": "/Users/demo/Documents/agent-harness",
-            "display": "explore tokentelemetry's pricing layer — pluggable providers?",
-            "model": "mimo-v2-pro", "billing_provider": "xiaomi",
-            "minutes_ago": 188,
-            "tokens": {"input": 6_400, "output": 184, "cached": 0, "reasoning": 18_400, "total": 24_984},
-            "cost": 0.067, "cost_anomaly": True, "mcp_tools": ["terminal", "patch"],
-        },
-        {
-            "id": "demo_webhook_github", "source_subtype": "webhook",
-            "project": "unknown",
-            "display": "GitHub webhook: PR opened #482 — auto-review & comment posted",
-            "model": "claude-sonnet-4-6", "billing_provider": "anthropic",
-            "minutes_ago": 26,
-            "tokens": {"input": 18_240, "output": 1_960, "cached": 14_080, "reasoning": 0, "total": 34_280},
-            "cost": 0.0383, "cost_anomaly": False, "mcp_tools": ["browser_navigate", "memory"],
-        },
-    ]
-    out: List[Dict[str, Any]] = []
-    for s in base:
-        out.append({
-            "id": s["id"], "agent": "hermes",
-            "project": s["project"],
-            "project_inferred": s["project"] != "unknown",
-            "timestamp": h(s["minutes_ago"]),
-            "display": s["display"], "tokens": s["tokens"],
-            "mcp_tools": s["mcp_tools"], "has_plan": False, "plans": [],
-            "model": s["model"], "artifacts": [], "cost": s["cost"],
-            "source_subtype": s["source_subtype"], "cost_anomaly": s["cost_anomaly"],
-            "parent_session_id": None, "end_reason": None,
-        })
-    return out
 
 
 # ---------------------------------------------------------------------------
