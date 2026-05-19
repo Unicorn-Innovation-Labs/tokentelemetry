@@ -6,10 +6,20 @@ Instead of remembering a second port, click the **TokenTelemetry** tab inside He
 
 ## Install
 
-From this repo root:
+### Most users — via Hermes's plugin manager
 
 ```bash
-./scripts/install-hermes-plugin.sh
+hermes plugins install VasiHemanth/tokentelemetry-hermes-plugin
+hermes dashboard
+```
+
+The standalone repo at [`VasiHemanth/tokentelemetry-hermes-plugin`](https://github.com/VasiHemanth/tokentelemetry-hermes-plugin) is auto-synced from this directory by `scripts/publish-plugin.sh`.
+
+### Hacking on the plugin — from this repo
+
+```bash
+./scripts/install-hermes-plugin.sh    # symlinks into ~/.hermes/plugins/
+hermes dashboard
 ```
 
 Or manually:
@@ -17,11 +27,6 @@ Or manually:
 ```bash
 mkdir -p ~/.hermes/plugins/tokentelemetry
 ln -s "$(pwd)/plugin/hermes-dashboard" ~/.hermes/plugins/tokentelemetry/dashboard
-```
-
-Then start (or restart) the dashboard:
-
-```bash
 hermes dashboard
 ```
 

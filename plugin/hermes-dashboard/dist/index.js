@@ -74,6 +74,139 @@
     );
   }
 
+  const INSTALL_CURL =
+    "curl -fsSL https://tokentelemetry.com/install.sh | bash";
+
+  const SUPPORTED_AGENTS = [
+    "Claude Code", "Codex", "Gemini CLI", "Cursor",
+    "Copilot", "Qwen", "OpenCode", "Vibe", "Antigravity",
+    "Hermes Agent"
+  ];
+
+  function NotInstalledCard({ base, onRefresh }) {
+    const [copied, setCopied] = useState(false);
+    const copyInstall = () => {
+      try {
+        navigator.clipboard.writeText(INSTALL_CURL);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      } catch (_) {}
+    };
+
+    return React.createElement(
+      Card,
+      null,
+      React.createElement(
+        CardContent,
+        { className: "py-8 px-6 max-w-2xl mx-auto" },
+
+        // Header
+        React.createElement(
+          "div",
+          { className: "flex items-start justify-between mb-4" },
+          React.createElement(
+            "div",
+            null,
+            React.createElement(
+              "div",
+              { className: "text-[10px] font-medium uppercase tracking-[0.18em] text-amber-400 mb-1" },
+              "TokenTelemetry not detected on ", base.replace(/^https?:\/\//, "")
+            ),
+            React.createElement(
+              "h2",
+              { className: "text-lg font-semibold text-zinc-100" },
+              "One install, observability for every agent you use"
+            )
+          ),
+          React.createElement(
+            Button,
+            { size: "sm", variant: "outline", onClick: onRefresh },
+            "Refresh"
+          )
+        ),
+
+        // What TT is — multi-agent pitch
+        React.createElement(
+          "p",
+          { className: "text-sm text-zinc-300 leading-relaxed mb-3" },
+          React.createElement("strong", { className: "text-zinc-100" }, "TokenTelemetry"),
+          " is a free, local observability dashboard for your AI agents — coding agents and autonomous ones. Sessions, costs, traces, tool calls, and reasoning, all in one place. No SDK, no signup, no cloud."
+        ),
+
+        // Agent chips
+        React.createElement(
+          "div",
+          { className: "flex flex-wrap gap-1.5 mb-5" },
+          ...SUPPORTED_AGENTS.map((name) =>
+            React.createElement(
+              "span",
+              {
+                key: name,
+                className: name === "Hermes Agent"
+                  ? "text-[10px] font-medium px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30"
+                  : "text-[10px] font-medium px-2 py-0.5 rounded-full bg-zinc-800/80 text-zinc-300 border border-zinc-700"
+              },
+              name
+            )
+          )
+        ),
+
+        // Install command card
+        React.createElement(
+          "div",
+          { className: "rounded-lg border border-zinc-800 bg-zinc-950/60 overflow-hidden mb-3" },
+          React.createElement(
+            "div",
+            { className: "flex items-center justify-between px-3 py-2 border-b border-zinc-800 bg-zinc-900/60" },
+            React.createElement(
+              "span",
+              { className: "text-[10px] font-medium uppercase tracking-[0.18em] text-zinc-400" },
+              "Install — macOS / Linux"
+            ),
+            React.createElement(
+              "button",
+              {
+                onClick: copyInstall,
+                className: `text-[11px] font-medium px-2 py-0.5 rounded ${
+                  copied ? "text-emerald-400" : "text-zinc-400 hover:text-zinc-100"
+                }`
+              },
+              copied ? "✓ Copied" : "Copy"
+            )
+          ),
+          React.createElement(
+            "pre",
+            { className: "px-3 py-2.5 text-xs font-mono text-zinc-200 overflow-x-auto" },
+            INSTALL_CURL
+          )
+        ),
+
+        // Footer hints
+        React.createElement(
+          "div",
+          { className: "flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-zinc-500" },
+          React.createElement(
+            "span",
+            null,
+            "Already installed? Run ",
+            React.createElement("code", { className: "font-mono text-zinc-300" }, "./start.sh"),
+            " then click Refresh"
+          ),
+          React.createElement(
+            "a",
+            {
+              href: "https://tokentelemetry.com",
+              target: "_blank",
+              rel: "noopener noreferrer",
+              className: "text-amber-400 hover:text-amber-300"
+            },
+            "Learn more ↗"
+          )
+        )
+      )
+    );
+  }
+
   function TokenTelemetryLauncher() {
     const [base, setBase] = useState(loadBase());
     const [draft, setDraft] = useState(base);
@@ -188,26 +321,7 @@
 
       // Launch grid
       status === "down"
-        ? React.createElement(
-            Card,
-            null,
-            React.createElement(
-              CardContent,
-              { className: "py-10 text-center" },
-              React.createElement("div", { className: "text-3xl mb-3" }, "⚠"),
-              React.createElement("p", { className: "text-sm text-zinc-200 mb-2" },
-                "Can't reach TokenTelemetry at ",
-                React.createElement("code", { className: "font-mono text-amber-400" }, base)
-              ),
-              React.createElement("p", { className: "text-xs text-zinc-500 mb-4 max-w-md mx-auto" },
-                "Start it from the tokentelemetry repo, then click Refresh:"),
-              React.createElement(
-                "pre",
-                { className: "text-xs text-zinc-400 bg-zinc-900/60 rounded p-3 text-left font-mono inline-block" },
-                "cd backend && uvicorn main:app --port 8000 &\ncd frontend && npm run dev"
-              )
-            )
-          )
+        ? React.createElement(NotInstalledCard, { base, onRefresh: () => probe(base) })
         : React.createElement(
             "div",
             {

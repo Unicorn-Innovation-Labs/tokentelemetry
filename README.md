@@ -79,14 +79,23 @@ Run TokenTelemetry on the same host as Hermes — we read `$HERMES_HOME` (or `~/
 
 ### Hermes Dashboard plugin (`:9119` → `:3000`)
 
-If you run Hermes's own web dashboard (`hermes dashboard`, port `9119`), install the plugin so TokenTelemetry shows up as a tab inside it — one port to remember, deep-link cards to every TT page:
+If you run Hermes's own web dashboard (`hermes dashboard`, port `9119`), install the plugin so TokenTelemetry shows up as a tab inside it — one port to remember, deep-link cards to every TT page.
+
+**Standalone install** (recommended — uses Hermes's own plugin manager):
+
+```bash
+hermes plugins install VasiHemanth/tokentelemetry-hermes-plugin
+hermes dashboard
+```
+
+**From this repo** (canonical source, useful if you're hacking on the plugin):
 
 ```bash
 ./scripts/install-hermes-plugin.sh
 hermes dashboard
 ```
 
-Pure-frontend launcher, no extra backend, no network access beyond your local TT. See [`plugin/hermes-dashboard/README.md`](plugin/hermes-dashboard/README.md) for details.
+The launcher tab works for every TT page, not just `/hermes` — Analytics, Projects, and All Agents views all open from inside Hermes Dashboard. Pure-frontend, no extra backend, no network access beyond your local TT. See [`plugin/hermes-dashboard/README.md`](plugin/hermes-dashboard/README.md) for details.
 
 ---
 

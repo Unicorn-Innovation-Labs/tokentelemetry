@@ -3,23 +3,21 @@ import { useState } from "react";
 import { Copy, Check, Info } from "lucide-react";
 
 const FULL_COMMAND =
-  "git clone https://github.com/VasiHemanth/tokentelemetry.git && cd tokentelemetry && ./start.sh && ./scripts/install-hermes-plugin.sh && hermes dashboard";
+  "curl -fsSL https://tokentelemetry.com/install.sh | bash && hermes plugins install VasiHemanth/tokentelemetry-hermes-plugin && hermes dashboard";
 
 const STEPS: { kicker: string; tagline: string; lines: string[] }[] = [
   {
     kicker: "1 · Run TokenTelemetry",
     tagline: "the engine — port :3000",
     lines: [
-      "git clone https://github.com/VasiHemanth/tokentelemetry.git",
-      "cd tokentelemetry",
-      "./start.sh",
+      "curl -fsSL https://tokentelemetry.com/install.sh | bash",
     ],
   },
   {
     kicker: "2 · Plug it into Hermes Dashboard",
     tagline: "the bridge — port :9119",
     lines: [
-      "./scripts/install-hermes-plugin.sh",
+      "hermes plugins install VasiHemanth/tokentelemetry-hermes-plugin",
       "hermes dashboard",
     ],
   },
