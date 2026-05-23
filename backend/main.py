@@ -782,10 +782,26 @@ def _scan_sessions_sync():
                             if data.get("type") == "event_msg":
                                 usage = ((data.get("payload") or {}).get("info") or {}).get("total_token_usage") or {}
                                 if usage:
-                                    sess["tokens"]["input"] = max(sess["tokens"]["input"], usage.get("input_tokens", 0))
-                                    sess["tokens"]["output"] = max(sess["tokens"]["output"], usage.get("output_tokens", 0))
-                                    sess["tokens"]["cached"] = max(sess["tokens"]["cached"], usage.get("cached_input_tokens", 0))
-                                    sess["tokens"]["total"] = sess["tokens"]["input"] + sess["tokens"]["output"] + sess["tokens"]["cached"]
+                                    # OpenAI/Codex semantics differ from Anthropic:
+                                    #   input_tokens is the GROSS input — it already includes cached_input_tokens.
+                                    #   total_tokens = input_tokens + output_tokens (cached is a breakdown, not an
+                                    #   independent bucket). Reasoning is typically already in output_tokens for
+                                    #   Chat-Completions-style APIs; we add reasoning explicitly only if the record's
+                                    #   total_tokens doesn't already account for it.
+                                    gross_input = usage.get("input_tokens", 0) or 0
+                                    cached      = usage.get("cached_input_tokens", 0) or 0
+                                    output      = usage.get("output_tokens", 0) or 0
+                                    reasoning   = usage.get("reasoning_output_tokens", 0) or 0
+                                    total_record = usage.get("total_tokens", 0) or 0
+                                    net_input   = max(0, gross_input - cached)
+                                    # If total_tokens > gross_input + output, the API is reporting reasoning as
+                                    # extra (not folded into output_tokens). Otherwise reasoning is implicit.
+                                    output_billable = output + (reasoning if total_record > gross_input + output else 0)
+
+                                    sess["tokens"]["input"]  = max(sess["tokens"]["input"],  net_input)
+                                    sess["tokens"]["cached"] = max(sess["tokens"]["cached"], cached)
+                                    sess["tokens"]["output"] = max(sess["tokens"]["output"], output_billable)
+                                    sess["tokens"]["total"]  = sess["tokens"]["input"] + sess["tokens"]["cached"] + sess["tokens"]["output"]
                                     sess["cost"] = calculate_cost(sess.get("model"), sess["tokens"]["input"], sess["tokens"]["output"], sess["tokens"]["cached"])
                             if data.get("type") == "response_item":
                                 if data.get("payload", {}).get("type") == "function_call":
