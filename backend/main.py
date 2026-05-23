@@ -649,11 +649,14 @@ def _scan_sessions_sync():
                                     sess["model"] = m
                                 usage = msg.get("usage", {})
                                 if usage:
-                                    sess["tokens"]["input"] += usage.get("input_tokens", 0)
-                                    sess["tokens"]["output"] += usage.get("output_tokens", 0)
-                                    sess["tokens"]["cached"] += usage.get("cache_read_input_tokens", 0)
+                                    cr = usage.get("cache_read_input_tokens", 0) or 0
+                                    sess["tokens"]["input"]  += usage.get("input_tokens", 0) or 0
+                                    sess["tokens"]["output"] += usage.get("output_tokens", 0) or 0
+                                    # cached = unique cached-prefix size (high-water-mark), NOT per-turn sum
+                                    sess["tokens"]["cached"] = max(sess["tokens"]["cached"], cr)
+                                    sess["tokens"]["_cached_sum"] = sess["tokens"].get("_cached_sum", 0) + cr
                                 sess["tokens"]["total"] = sess["tokens"]["input"] + sess["tokens"]["output"] + sess["tokens"]["cached"]
-                                sess["cost"] = calculate_cost(sess.get("model"), sess["tokens"]["input"], sess["tokens"]["output"], sess["tokens"]["cached"])
+                                sess["cost"] = calculate_cost(sess.get("model"), sess["tokens"]["input"], sess["tokens"]["output"], sess["tokens"].get("_cached_sum", sess["tokens"]["cached"]))
                                 for item in msg.get("content", []):
                                     if item.get("type") == "tool_use":
                                         tool = item.get("name")
@@ -1017,8 +1020,11 @@ def _scan_sessions_sync():
                                         if data.get("message", {}).get("model") and not model:
                                             model = data["message"]["model"]
                                         usage = data.get("message", {}).get("usage", {})
-                                        tokens["input"] += usage.get("input_tokens", 0); tokens["output"] += usage.get("output_tokens", 0)
-                                        tokens["cached"] += usage.get("cache_read_input_tokens", 0)
+                                        cr = usage.get("cache_read_input_tokens", 0) or 0
+                                        tokens["input"]  += usage.get("input_tokens", 0) or 0
+                                        tokens["output"] += usage.get("output_tokens", 0) or 0
+                                        tokens["cached"] = max(tokens["cached"], cr)
+                                        tokens["_cached_sum"] = tokens.get("_cached_sum", 0) + cr
                                         for item in data.get("message", {}).get("content", []):
                                             if item.get("type") == "tool_use":
                                                 if item.get("name") not in mcp_tools: mcp_tools.append(item.get("name"))
@@ -1029,7 +1035,7 @@ def _scan_sessions_sync():
                                                     plans.append({"session_id": sid, "agent": "qwen", "timestamp": last_ts, "content": t_text})
                                 except: continue
                         tokens["total"] = tokens["input"] + tokens["output"] + tokens["cached"]
-                        tokens["cost"] = calculate_cost(model, tokens["input"], tokens["output"], tokens["cached"])
+                        tokens["cost"] = calculate_cost(model, tokens["input"], tokens["output"], tokens.get("_cached_sum", tokens["cached"]))
                         sessions.append({"id": sid, "agent": "qwen", "project": project_path, "timestamp": last_ts, "display": first_msg[:100], "tokens": tokens, "mcp_tools": mcp_tools, "has_plan": has_plan, "plans": plans, "model": model, "artifacts": artifacts, "cost": tokens["cost"]})
                     except: continue
 
@@ -1114,9 +1120,11 @@ def _scan_sessions_sync():
                                         if data.get("role") == "assistant":
                                             if msg.get("model") and not model: model = msg.get("model")
                                             usage = msg.get("usage", {}) if isinstance(msg.get("usage"), dict) else {}
-                                            tokens["input"] += usage.get("input_tokens", 0)
-                                            tokens["output"] += usage.get("output_tokens", 0)
-                                            tokens["cached"] += usage.get("cache_read_input_tokens", 0)
+                                            cr = usage.get("cache_read_input_tokens", 0) or 0
+                                            tokens["input"]  += usage.get("input_tokens", 0) or 0
+                                            tokens["output"] += usage.get("output_tokens", 0) or 0
+                                            tokens["cached"] = max(tokens["cached"], cr)
+                                            tokens["_cached_sum"] = tokens.get("_cached_sum", 0) + cr
                                             for item in msg.get("content", []) if isinstance(msg.get("content"), list) else []:
                                                 if item.get("type") == "tool_use":
                                                     name = item.get("name")
@@ -1132,7 +1140,7 @@ def _scan_sessions_sync():
                                                         has_plan = True
                                                         plans.append({"session_id": sid, "agent": "cursor", "timestamp": mtime, "content": t_text})
                                 tokens["total"] = tokens["input"] + tokens["output"] + tokens["cached"]
-                                tokens["cost"] = calculate_cost(model, tokens["input"], tokens["output"], tokens["cached"])
+                                tokens["cost"] = calculate_cost(model, tokens["input"], tokens["output"], tokens.get("_cached_sum", tokens["cached"]))
                                 sessions.append({"id": sid, "agent": "cursor", "project": project_path, "timestamp": mtime, "display": first_msg[:100], "tokens": tokens, "mcp_tools": mcp_tools, "subagents": subagents, "has_plan": has_plan, "plans": plans, "model": model, "artifacts": artifacts, "cost": tokens["cost"]})
                             except: continue
 
