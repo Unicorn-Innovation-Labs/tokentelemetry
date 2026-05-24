@@ -49,7 +49,7 @@ PRICING = {
     "gpt-5.4-mini":      {"in": 0.75,  "out": 4.50,  "cached_read": 0.075},
     "gpt-5-4-mini":      {"in": 0.75,  "out": 4.50,  "cached_read": 0.075},
     "gpt-5-mini":        {"in": 0.15,  "out": 0.60,  "cached_read": 0.015},
-    "gpt-5":             {"in": 0.625, "out": 5.00,  "cached_read": 0.06},
+    "gpt-5":             {"in": 1.25,  "out": 10.00, "cached_read": 0.125},
     "gpt-4.1":           {"in": 2.50,  "out": 10.00, "cached_read": 1.25},
 
     # --- Google (Gemini) ---

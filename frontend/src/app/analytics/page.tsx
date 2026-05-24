@@ -1,6 +1,7 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
+import { cn } from "@/lib/cn";
 import {
   BarChart3, TrendingUp, ArrowDownToLine, ArrowUpFromLine,
   Zap, DollarSign, Cpu,
@@ -54,10 +55,41 @@ function useChartTheme() {
   };
 }
 
+type DayRange = "7d" | "30d" | "90d" | "all";
+const RANGES: { key: DayRange; label: string; days: number | null }[] = [
+  { key: "7d",  label: "7d",  days: 7 },
+  { key: "30d", label: "30d", days: 30 },
+  { key: "90d", label: "90d", days: 90 },
+  { key: "all", label: "All", days: null },
+];
+
 export default function AnalyticsPage() {
   const { data, loading } = useResource<AnalyticsData>("/analytics", { pollMs: 30_000 });
   const ct = useChartTheme();
   const AXIS = { stroke: ct.axisStroke, fontSize: 10, tickLine: false, axisLine: false, tick: { fill: ct.tickFill } } as const;
+  const [range, setRange] = useState<DayRange>("30d");
+
+  // Filter by_day to the selected window. Dates are local "YYYY-MM-DD"
+  // strings (see backend A10 fix), so a lex compare against a cutoff string works.
+  const filteredByDay = useMemo(() => {
+    if (!data?.by_day) return [];
+    const cfg = RANGES.find(r => r.key === range);
+    if (!cfg?.days) return data.by_day;
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - (cfg.days - 1));
+    const cutoffStr = cutoff.toISOString().slice(0, 10);
+    return data.by_day.filter(d => d.date >= cutoffStr);
+  }, [data, range]);
+
+  const rangeTotals = useMemo(() => {
+    return filteredByDay.reduce(
+      (acc, d) => ({
+        total: acc.total + (d.total || 0),
+        cost:  acc.cost  + (d.cost  || 0),
+      }),
+      { total: 0, cost: 0 }
+    );
+  }, [filteredByDay]);
 
   const modelData = useMemo(() => {
     if (!data?.by_model) return [];
@@ -143,11 +175,31 @@ export default function AnalyticsPage() {
         <Card className="lg:col-span-2" padding="lg">
           <CardHeader>
             <CardTitle><TrendingUp size={14} className="text-[var(--tt-brand)]" /> Token consumption (daily)</CardTitle>
-            <CardEyebrow>{data.by_day.length} days</CardEyebrow>
+            <div className="flex items-center gap-3">
+              <span className="text-[10px] tabular text-[var(--tt-fg-dim)] tracking-[0.1em]">
+                {compact(rangeTotals.total)} tokens · ${rangeTotals.cost.toFixed(2)}
+              </span>
+              <div className="flex gap-0.5 bg-[var(--tt-sunken)] border border-[var(--tt-border)] rounded-[var(--tt-radius)] p-0.5">
+                {RANGES.map(r => (
+                  <button
+                    key={r.key}
+                    onClick={() => setRange(r.key)}
+                    className={cn(
+                      "px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] rounded-[calc(var(--tt-radius)-2px)] transition-colors",
+                      range === r.key
+                        ? "bg-[var(--tt-panel)] text-[var(--tt-fg)] shadow-sm"
+                        : "text-[var(--tt-fg-dim)] hover:text-[var(--tt-fg)]"
+                    )}
+                  >
+                    {r.label}
+                  </button>
+                ))}
+              </div>
+            </div>
           </CardHeader>
           <div className="h-72 w-full">
             <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={data.by_day} margin={{ top: 10, right: 16, bottom: 0, left: 0 }}>
+              <AreaChart data={filteredByDay} margin={{ top: 10, right: 16, bottom: 0, left: 0 }}>
                 <defs>
                   <linearGradient id="ttArea" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="0%"   stopColor="#60a5fa" stopOpacity={0.45} />
@@ -281,14 +333,15 @@ export default function AnalyticsPage() {
               </div>
             </Card>
 
-            <Card padding="lg">
+            <Card padding="lg" className="flex flex-col min-h-0">
               <CardHeader>
                 <CardTitle><Cpu size={14} className="text-emerald-400" /> Model share</CardTitle>
+                <CardEyebrow>{modelData.length} models</CardEyebrow>
               </CardHeader>
-              <div className="h-56">
+              <div className="h-44 shrink-0">
                 <ResponsiveContainer width="100%" height="100%">
                   <RePieChart>
-                    <Pie data={modelData} innerRadius={48} outerRadius={76} paddingAngle={2} dataKey="total" stroke="none">
+                    <Pie data={modelData} innerRadius={40} outerRadius={64} paddingAngle={2} dataKey="total" stroke="none">
                       {modelData.map((m) => <Cell key={m.name} fill={m.color} />)}
                     </Pie>
                     <Tooltip
@@ -299,7 +352,7 @@ export default function AnalyticsPage() {
                   </RePieChart>
                 </ResponsiveContainer>
               </div>
-              <ul className="mt-3 space-y-2 max-h-56 overflow-y-auto pr-1">
+              <ul className="mt-2 space-y-1.5 flex-1 min-h-0 overflow-y-auto pr-1">
                 {modelData.map((m) => (
                   <li key={m.name} className="flex items-center justify-between gap-2 text-[11px]">
                     <span className="flex items-center gap-2 min-w-0">

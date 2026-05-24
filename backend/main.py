@@ -28,6 +28,41 @@ def _aware(dt):
 def _now():
     return datetime.now(timezone.utc)
 
+def _file_mtime_utc(path) -> datetime:
+    """File mtime as UTC datetime, falling back to _now() only if the file
+    is genuinely missing. Used as a historical timestamp fallback so
+    sessions with bad source-data timestamps don't pile onto today.
+    """
+    try:
+        return datetime.fromtimestamp(Path(path).stat().st_mtime, tz=timezone.utc)
+    except Exception:
+        return _now()
+
+def _pid_alive(pid: int) -> bool:
+    """Cross-platform process liveness probe.
+
+    On POSIX, os.kill(pid, 0) is a cheap no-op signal that raises if the
+    process is gone. On Windows, signal 0 is not honored — os.kill calls
+    TerminateProcess and would actually kill the target — so we use
+    OpenProcess via ctypes (PROCESS_QUERY_LIMITED_INFORMATION = 0x1000).
+    """
+    if os.name == "nt":
+        try:
+            import ctypes
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+            if handle:
+                ctypes.windll.kernel32.CloseHandle(handle)
+                return True
+            return False
+        except Exception:
+            return False
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except (ProcessLookupError, PermissionError, OSError):
+        return False
+
 app = FastAPI(title="TokenTelemetry API")
 
 # Enable CORS for Next.js frontend
@@ -93,7 +128,7 @@ def _load_project_aliases() -> Dict[str, str]:
         try:
             with open(PROJECT_ALIASES_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
-        except: pass
+        except Exception: pass
     return {}
 
 def _antigravity_infer_project(text: str) -> str:
@@ -316,7 +351,7 @@ def _hermes_memory_io(session_id: str) -> Dict[str, Any]:
                     if not raw: continue
                     try:
                         tcs = json.loads(raw)
-                    except: continue
+                    except Exception: continue
                     if not isinstance(tcs, list): continue
                     for tc in tcs:
                         fn = (tc or {}).get("function") or {}
@@ -325,7 +360,7 @@ def _hermes_memory_io(session_id: str) -> Dict[str, Any]:
                         args_raw = fn.get("arguments") or "{}"
                         try:
                             args = json.loads(args_raw) if isinstance(args_raw, str) else (args_raw or {})
-                        except: continue
+                        except Exception: continue
                         action = (args.get("action") or "").lower()
                         target = (args.get("target") or "memory").lower()
                         if action in {"add", "replace", "remove"} and target in {"memory", "user"}:
@@ -478,13 +513,11 @@ def _hermes_gateway_state() -> Dict[str, Any]:
                 out["pid"] = pid_data.get("pid") if isinstance(pid_data, dict) else int(pid_data)
             except json.JSONDecodeError:
                 out["pid"] = int(raw)
-            # Cheap liveness check — kill(pid, 0) raises if no such process
+            # Cheap liveness check. On POSIX, kill(pid, 0) is a no-op probe.
+            # On Windows, kill(pid, 0) actually terminates the process, so use
+            # OpenProcess via ctypes instead.
             if out["pid"]:
-                try:
-                    os.kill(out["pid"], 0)
-                    out["pid_alive"] = True
-                except (ProcessLookupError, PermissionError, OSError):
-                    out["pid_alive"] = False
+                out["pid_alive"] = _pid_alive(out["pid"])
     except Exception:
         pass
     return out
@@ -598,18 +631,38 @@ def _scan_sessions_sync():
         return aliases.get(path, path)
 
     # 1. Claude
+    # Modern Claude Code (v1+) writes sessions exclusively to
+    #   ~/.claude/projects/<encoded-path>/<uuid>.jsonl
+    # and no longer creates history.jsonl.  We therefore discover sessions
+    # from the projects/ tree first (works on every OS), then overlay any
+    # metadata from history.jsonl if it happens to exist (legacy installs).
     claude_history = CLAUDE_DIR / "history.jsonl"
-    if claude_history.exists():
-        claude_sessions = {}
-        # Pre-index Claude session files to avoid recursive glob in loop
-        claude_file_map = {}
-        try:
-            for p_dir in (CLAUDE_DIR / "projects").iterdir():
-                if p_dir.is_dir():
-                    for f in p_dir.glob("*.jsonl"):
-                        claude_file_map[f.stem] = f
-        except: pass
+    claude_sessions: dict = {}
+    # Pre-index Claude session files to avoid recursive glob in loop
+    claude_file_map: dict = {}
+    try:
+        for p_dir in (CLAUDE_DIR / "projects").iterdir():
+            if p_dir.is_dir():
+                for f in p_dir.glob("*.jsonl"):
+                    claude_file_map[f.stem] = f
+    except Exception: pass
 
+    # Seed one stub per discovered session file (mtime as timestamp).
+    for sid, f in claude_file_map.items():
+        try:
+            ts = datetime.fromtimestamp(f.stat().st_mtime, tz=timezone.utc)
+        except Exception:
+            ts = _now()
+        claude_sessions[sid] = {
+            "id": sid, "agent": "claude", "project": "unknown",
+            "timestamp": ts, "display": None,
+            "tokens": {"input": 0, "output": 0, "cached": 0, "total": 0},
+            "mcp_tools": [], "has_plan": False, "plans": [],
+            "model": None, "artifacts": [],
+        }
+
+    # Optional enrichment: overlay project/display from legacy history.jsonl.
+    if claude_history.exists():
         try:
             with open(claude_history, "r", encoding="utf-8", errors="replace") as f:
                 for line in f:
@@ -617,13 +670,60 @@ def _scan_sessions_sync():
                         data = json.loads(line)
                         sid = data.get("sessionId")
                         if not sid: continue
-                        ts = datetime.fromtimestamp(data.get("timestamp") / 1000, tz=timezone.utc) if data.get("timestamp") else _now()
-                        if sid not in claude_sessions or ts > claude_sessions[sid]["timestamp"]:
-                            claude_sessions[sid] = {"id": sid, "agent": "claude", "project": apply_alias(data.get("project", "unknown")), "timestamp": ts, "display": data.get("display"), "tokens": {"input": 0, "output": 0, "cached": 0, "total": 0}, "mcp_tools": [], "has_plan": False, "plans": [], "model": None, "artifacts": []}
-                    except: continue
-        except: pass
+                        ts = datetime.fromtimestamp(data.get("timestamp") / 1000, tz=timezone.utc) if data.get("timestamp") else _file_mtime_utc(claude_history)
+                        if sid not in claude_sessions:
+                            # Session only known from history.jsonl (no matching .jsonl file)
+                            claude_sessions[sid] = {
+                                "id": sid, "agent": "claude",
+                                "project": apply_alias(data.get("project", "unknown")),
+                                "timestamp": ts, "display": data.get("display"),
+                                "tokens": {"input": 0, "output": 0, "cached": 0, "total": 0},
+                                "mcp_tools": [], "has_plan": False, "plans": [],
+                                "model": None, "artifacts": [],
+                            }
+                        else:
+                            # Overlay metadata only; keep file-derived timestamp if newer
+                            sess = claude_sessions[sid]
+                            if ts > sess["timestamp"]:
+                                sess["timestamp"] = ts
+                            if data.get("project"):
+                                sess["project"] = apply_alias(data["project"])
+                            if data.get("display") and not sess.get("display"):
+                                sess["display"] = data["display"]
+                    except Exception: continue
+        except Exception: pass
 
-        for sid, sess in list(claude_sessions.items())[:100]:
+    # Derive project/display from session file content for stubs still unknown.
+    for sid, sess in claude_sessions.items():
+        if sess["project"] != "unknown" and sess.get("display"):
+            continue
+        session_file = claude_file_map.get(sid)
+        if not session_file:
+            continue
+        try:
+            with open(session_file, "r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    try:
+                        data = json.loads(line)
+                    except Exception: continue
+                    if sess["project"] == "unknown" and data.get("cwd"):
+                        sess["project"] = apply_alias(data["cwd"])
+                    if not sess.get("display"):
+                        if data.get("type") == "summary" and data.get("summary"):
+                            sess["display"] = str(data["summary"])[:120]
+                        elif data.get("type") == "user":
+                            uc = data.get("message", {}).get("content")
+                            if isinstance(uc, str) and uc.strip():
+                                sess["display"] = uc.strip()[:120]
+                    if sess["project"] != "unknown" and sess.get("display"):
+                        break
+        except Exception: pass
+
+    # Sort by recency (newest first) BEFORE truncating — insertion-order
+    # slicing previously dropped genuinely recent sessions when totals
+    # exceeded 100.
+    if claude_sessions:
+        for sid, sess in sorted(claude_sessions.items(), key=lambda kv: kv[1]["timestamp"], reverse=True)[:100]:
             session_file = claude_file_map.get(sid)
             if session_file:
                 # Discover Claude Project Memory artifacts
@@ -632,7 +732,7 @@ def _scan_sessions_sync():
                     if memory_dir.exists():
                         for mf in memory_dir.glob("*.md"):
                             sess["artifacts"].append({"name": mf.name, "path": str(mf), "type": "document"})
-                except: pass
+                except Exception: pass
 
                 # pending_edit_tool_ids: Set[str] = set()  # quality signals (commented out)
                 # prior_edit_failed = False
@@ -641,7 +741,7 @@ def _scan_sessions_sync():
                         for line in f:
                             try:
                                 data = json.loads(line)
-                            except: continue
+                            except Exception: continue
                             if data.get("type") == "assistant":
                                 msg = data.get("message", {})
                                 m = msg.get("model")
@@ -649,11 +749,17 @@ def _scan_sessions_sync():
                                     sess["model"] = m
                                 usage = msg.get("usage", {})
                                 if usage:
-                                    sess["tokens"]["input"] += usage.get("input_tokens", 0)
-                                    sess["tokens"]["output"] += usage.get("output_tokens", 0)
-                                    sess["tokens"]["cached"] += usage.get("cache_read_input_tokens", 0)
+                                    cr = usage.get("cache_read_input_tokens", 0) or 0
+                                    cc = usage.get("cache_creation_input_tokens", 0) or 0
+                                    # cache_creation is billed at ~1.25x input rate; fold into input
+                                    # as the closest approximation under calculate_cost's single-param API.
+                                    sess["tokens"]["input"]  += (usage.get("input_tokens", 0) or 0) + cc
+                                    sess["tokens"]["output"] += usage.get("output_tokens", 0) or 0
+                                    # cached = unique cached-prefix size (high-water-mark), NOT per-turn sum
+                                    sess["tokens"]["cached"] = max(sess["tokens"]["cached"], cr)
+                                    sess["tokens"]["_cached_sum"] = sess["tokens"].get("_cached_sum", 0) + cr
                                 sess["tokens"]["total"] = sess["tokens"]["input"] + sess["tokens"]["output"] + sess["tokens"]["cached"]
-                                sess["cost"] = calculate_cost(sess.get("model"), sess["tokens"]["input"], sess["tokens"]["output"], sess["tokens"]["cached"])
+                                sess["cost"] = calculate_cost(sess.get("model"), sess["tokens"]["input"], sess["tokens"]["output"], sess["tokens"].get("_cached_sum", sess["tokens"]["cached"]))
                                 for item in msg.get("content", []):
                                     if item.get("type") == "tool_use":
                                         tool = item.get("name")
@@ -689,7 +795,7 @@ def _scan_sessions_sync():
                                 # else:
                                 #     prior_edit_failed = False
                                 #     pending_edit_tool_ids = set()
-                except: continue
+                except Exception: continue
         sessions.extend(claude_sessions.values())
     # 2. Codex
     codex_index = CODEX_DIR / "session_index.jsonl"
@@ -705,7 +811,7 @@ def _scan_sessions_sync():
                 if len(parts) >= 6:
                     sid = "-".join(parts[-5:])
                     codex_file_map[sid] = f
-        except: pass
+        except Exception: pass
 
         try:
             with open(codex_index, "r", encoding="utf-8", errors="replace") as f:
@@ -713,14 +819,14 @@ def _scan_sessions_sync():
                     try:
                         data = json.loads(line); sid = data.get("id")
                         if not sid: continue
-                        ts = _aware(datetime.fromisoformat(data.get("updated_at").replace('Z', '+00:00'))) if data.get("updated_at") else _now()
+                        ts = _aware(datetime.fromisoformat(data.get("updated_at").replace('Z', '+00:00'))) if data.get("updated_at") else _file_mtime_utc(codex_index)
                         if sid not in codex_sessions or ts > codex_sessions[sid]["timestamp"]:
                             codex_sessions[sid] = {"id": sid, "agent": "codex", "project": "unknown", "timestamp": ts, "text": data.get("thread_name"), "tokens": {"input": 0, "output": 0, "cached": 0, "total": 0}, "mcp_tools": [], "has_plan": False, "plans": [], "model": None, "artifacts": []}
-                    except: continue
-        except: pass
+                    except Exception: continue
+        except Exception: pass
         
         # Process the 100 most recent sessions
-        for sid, sess in list(codex_sessions.items())[-100:]:
+        for sid, sess in sorted(codex_sessions.items(), key=lambda kv: kv[1]["timestamp"], reverse=True)[:100]:
             rollout_file = codex_file_map.get(sid)
             if rollout_file:
                 try:
@@ -728,7 +834,7 @@ def _scan_sessions_sync():
                         for line in f:
                             try:
                                 data = json.loads(line)
-                            except: continue
+                            except Exception: continue
                             if data.get("type") == "session_meta":
                                 sess["project"] = apply_alias(data["payload"].get("cwd", "unknown"))
                                 if not sess.get("model") and data["payload"].get("model"):
@@ -738,12 +844,28 @@ def _scan_sessions_sync():
                             if data.get("type") == "turn_context" and not sess.get("model"):
                                 sess["model"] = data.get("payload", {}).get("model")
                             if data.get("type") == "event_msg":
-                                usage = data.get("payload", {}).get("info", {}).get("total_token_usage", {})
+                                usage = ((data.get("payload") or {}).get("info") or {}).get("total_token_usage") or {}
                                 if usage:
-                                    sess["tokens"]["input"] = max(sess["tokens"]["input"], usage.get("input_tokens", 0))
-                                    sess["tokens"]["output"] = max(sess["tokens"]["output"], usage.get("output_tokens", 0))
-                                    sess["tokens"]["cached"] = max(sess["tokens"]["cached"], usage.get("cached_input_tokens", 0))
-                                    sess["tokens"]["total"] = sess["tokens"]["input"] + sess["tokens"]["output"] + sess["tokens"]["cached"]
+                                    # OpenAI/Codex semantics differ from Anthropic:
+                                    #   input_tokens is the GROSS input — it already includes cached_input_tokens.
+                                    #   total_tokens = input_tokens + output_tokens (cached is a breakdown, not an
+                                    #   independent bucket). Reasoning is typically already in output_tokens for
+                                    #   Chat-Completions-style APIs; we add reasoning explicitly only if the record's
+                                    #   total_tokens doesn't already account for it.
+                                    gross_input = usage.get("input_tokens", 0) or 0
+                                    cached      = usage.get("cached_input_tokens", 0) or 0
+                                    output      = usage.get("output_tokens", 0) or 0
+                                    reasoning   = usage.get("reasoning_output_tokens", 0) or 0
+                                    total_record = usage.get("total_tokens", 0) or 0
+                                    net_input   = max(0, gross_input - cached)
+                                    # If total_tokens > gross_input + output, the API is reporting reasoning as
+                                    # extra (not folded into output_tokens). Otherwise reasoning is implicit.
+                                    output_billable = output + (reasoning if total_record > gross_input + output else 0)
+
+                                    sess["tokens"]["input"]  = max(sess["tokens"]["input"],  net_input)
+                                    sess["tokens"]["cached"] = max(sess["tokens"]["cached"], cached)
+                                    sess["tokens"]["output"] = max(sess["tokens"]["output"], output_billable)
+                                    sess["tokens"]["total"]  = sess["tokens"]["input"] + sess["tokens"]["cached"] + sess["tokens"]["output"]
                                     sess["cost"] = calculate_cost(sess.get("model"), sess["tokens"]["input"], sess["tokens"]["output"], sess["tokens"]["cached"])
                             if data.get("type") == "response_item":
                                 if data.get("payload", {}).get("type") == "function_call":
@@ -759,8 +881,8 @@ def _scan_sessions_sync():
                                                 )
                                                 sess["has_plan"] = True
                                                 sess["plans"].append({"session_id": sid, "agent": "codex", "timestamp": sess["timestamp"], "content": content})
-                                        except: pass
-                except: pass
+                                        except Exception: pass
+                except Exception: pass
         for s in codex_sessions.values():
             if not s.get("model") and s.get("_provider"):
                 s["model"] = s["_provider"]
@@ -791,7 +913,7 @@ def _scan_sessions_sync():
                         if _child.is_dir():
                             _cp = str(_child)
                             _hash_to_path[_hashlib.sha256(_cp.encode()).hexdigest()] = _cp
-                except: pass
+                except Exception: pass
 
             # Pre-collect all chat session IDs globally to prevent cross-dir duplicates in logs.json
             _all_chat_sids: set = set()
@@ -801,7 +923,7 @@ def _scan_sessions_sync():
                     for _cf in _cd.glob("*.json"):
                         try:
                             _all_chat_sids.add(json.loads(_cf.read_text(encoding="utf-8", errors="replace")).get("sessionId") or "")
-                        except: pass
+                        except Exception: pass
             _all_log_sids: set = set()  # tracks log-only sessions added, prevents cross-dir duplication
 
             for tmp_dir in (GEMINI_DIR / "tmp").glob("*"):
@@ -825,7 +947,7 @@ def _scan_sessions_sync():
                                 # kind="main" means Gemini CLI; absent/other means Antigravity
                                 session_kind = data.get("kind")
                                 effective_agent = agent_type if session_kind == "main" else "antigravity"
-                                ts = _aware(datetime.fromisoformat(data.get("lastUpdated").replace('Z', '+00:00'))) if data.get("lastUpdated") else _now()
+                                ts = _aware(datetime.fromisoformat(data.get("lastUpdated").replace('Z', '+00:00'))) if data.get("lastUpdated") else _file_mtime_utc(cf)
                                 tokens = {"input": 0, "output": 0, "cached": 0, "total": 0}
                                 mcp_tools = []; has_plan = False; first_msg = ""; plans = []
                                 has_user = False
@@ -849,7 +971,7 @@ def _scan_sessions_sync():
                                                     try: 
                                                         with open(pp, "r", encoding="utf-8", errors="replace") as pf:
                                                             plan_text = pf.read()
-                                                    except: plan_text = f"(plan stored at {pp})"
+                                                    except Exception: plan_text = f"(plan stored at {pp})"
                                                 if not plan_text:
                                                     plan_text = (tc.get("args") or {}).get("plan") or tc.get("resultDisplay") or ""
                                                 if plan_text:
@@ -873,11 +995,11 @@ def _scan_sessions_sync():
                                         for af in art_dir.iterdir():
                                             if af.suffix.lower() in (".mp4", ".mov"): artifacts.append({"name": af.name, "path": str(af), "type": "video"})
                                             elif af.suffix.lower() in (".png", ".webp", ".jpg", ".jpeg"): artifacts.append({"name": af.name, "path": str(af), "type": "image"})
-                                except: pass
+                                except Exception: pass
 
                                 tokens["cost"] = calculate_cost(model, tokens["input"], tokens["output"], tokens["cached"])
                                 sessions.append({"id": sid, "agent": effective_agent, "project": project_path, "timestamp": ts, "display": first_msg[:100], "tokens": tokens, "mcp_tools": mcp_tools, "has_plan": has_plan, "plans": plans, "model": model, "artifacts": artifacts, "cost": tokens["cost"]})
-                        except: continue
+                        except Exception: continue
                 # Scan logs.json for Antigravity sessions that have no chat JSON file
                 _logs_file = tmp_dir / "logs.json"
                 if _logs_file.exists():
@@ -897,7 +1019,7 @@ def _scan_sessions_sync():
                             _first_msg = _msgs[0].get("message", "")
                             _last_ts_str = _session_last_ts.get(_lsid, "")
                             try: _lts = _aware(datetime.fromisoformat(_last_ts_str.replace('Z', '+00:00')))
-                            except: _lts = _now()
+                            except Exception: _lts = _now()
                             _plans = []; _has_plan = False
                             _plan_dir = tmp_dir / _lsid / "plans"
                             if _plan_dir.exists():
@@ -906,12 +1028,12 @@ def _scan_sessions_sync():
                                         _pt = _pf.read_text(encoding="utf-8", errors="replace")
                                         _has_plan = True
                                         _plans.append({"session_id": _lsid, "agent": "antigravity", "timestamp": _lts, "content": _pt})
-                                    except: pass
+                                    except Exception: pass
                             _tkns = {"input": 0, "output": 0, "cached": 0, "total": 0, "cost": 0.0}
                             sessions.append({"id": _lsid, "agent": "antigravity", "project": project_path, "timestamp": _lts, "display": _first_msg[:100], "tokens": _tkns, "mcp_tools": [], "has_plan": _has_plan, "plans": _plans, "model": None, "artifacts": [], "cost": 0.0})
                             _all_log_sids.add(_lsid)
-                    except: pass
-        except: pass
+                    except Exception: pass
+        except Exception: pass
 
     # 3b. Antigravity brain/ folder — richer per-session artifacts (task/plan/walkthrough)
     if ANTIGRAVITY_BRAIN_DIR.exists():
@@ -931,7 +1053,7 @@ def _scan_sessions_sync():
                         try: 
                             with open(fp, "r", encoding="utf-8", errors="replace") as f:
                                 body = f.read()
-                        except: body = ""
+                        except Exception: body = ""
                         if fname == "task.md": task = body
                         elif fname == "implementation_plan.md": plan = body
                         else: walkthrough = body
@@ -942,7 +1064,7 @@ def _scan_sessions_sync():
                             if updated:
                                 ts = _aware(datetime.fromisoformat(updated.replace("Z", "+00:00")))
                                 if latest_ts is None or ts > latest_ts: latest_ts = ts
-                        except: pass
+                        except Exception: pass
                 
                 # Scan for media artifacts at the brain session root (Antigravity drops
                 # previews/screenshots here) and optionally in an artifacts/ subdir.
@@ -958,7 +1080,7 @@ def _scan_sessions_sync():
                                 artifacts.append({"name": af.name, "path": str(af), "type": "video"})
                             elif ext in (".png", ".webp", ".jpg", ".jpeg", ".gif"):
                                 artifacts.append({"name": af.name, "path": str(af), "type": "image"})
-                except: pass
+                except Exception: pass
 
                 # Pull in a sampled slice of browser_recordings/<sid> frames
                 try:
@@ -970,7 +1092,7 @@ def _scan_sessions_sync():
                             step = max(1, total // 12)  # cap at ~12 thumbnails
                             for p in frames[::step]:
                                 artifacts.append({"name": f"frame {p.name}", "path": str(p), "type": "image"})
-                except: pass
+                except Exception: pass
 
                 if not (task or plan or walkthrough or artifacts): continue
                 project = apply_alias(_antigravity_infer_project((task or "") + "\n" + (plan or "")))
@@ -990,9 +1112,10 @@ def _scan_sessions_sync():
                     "has_plan": bool(plan),
                     "plans": plans,
                     "model": "gemini (antigravity)",
-                    "artifacts": artifacts
+                    "artifacts": artifacts,
+                    "cost": 0.0,
                 })
-            except: continue
+            except Exception: continue
 
     # 4. Qwen
     if QWEN_DIR.exists():
@@ -1002,7 +1125,7 @@ def _scan_sessions_sync():
                     try:
                         sid = cf.stem; mcp_tools = []; has_plan = False; first_msg = ""; plans = []
                         tokens = {"input": 0, "output": 0, "cached": 0, "total": 0}
-                        project_path = "unknown"; last_ts = _now(); model = None
+                        project_path = "unknown"; last_ts = _file_mtime_utc(cf); model = None
                         artifacts = []
                         with open(cf, "r", encoding="utf-8", errors="replace") as f:
                             for line in f:
@@ -1017,8 +1140,12 @@ def _scan_sessions_sync():
                                         if data.get("message", {}).get("model") and not model:
                                             model = data["message"]["model"]
                                         usage = data.get("message", {}).get("usage", {})
-                                        tokens["input"] += usage.get("input_tokens", 0); tokens["output"] += usage.get("output_tokens", 0)
-                                        tokens["cached"] += usage.get("cache_read_input_tokens", 0)
+                                        cr = usage.get("cache_read_input_tokens", 0) or 0
+                                        cc = usage.get("cache_creation_input_tokens", 0) or 0
+                                        tokens["input"]  += (usage.get("input_tokens", 0) or 0) + cc
+                                        tokens["output"] += usage.get("output_tokens", 0) or 0
+                                        tokens["cached"] = max(tokens["cached"], cr)
+                                        tokens["_cached_sum"] = tokens.get("_cached_sum", 0) + cr
                                         for item in data.get("message", {}).get("content", []):
                                             if item.get("type") == "tool_use":
                                                 if item.get("name") not in mcp_tools: mcp_tools.append(item.get("name"))
@@ -1027,11 +1154,11 @@ def _scan_sessions_sync():
                                                 if "plan" in t_text.lower() and len(t_text) > 100:
                                                     has_plan = True
                                                     plans.append({"session_id": sid, "agent": "qwen", "timestamp": last_ts, "content": t_text})
-                                except: continue
+                                except Exception: continue
                         tokens["total"] = tokens["input"] + tokens["output"] + tokens["cached"]
-                        tokens["cost"] = calculate_cost(model, tokens["input"], tokens["output"], tokens["cached"])
+                        tokens["cost"] = calculate_cost(model, tokens["input"], tokens["output"], tokens.get("_cached_sum", tokens["cached"]))
                         sessions.append({"id": sid, "agent": "qwen", "project": project_path, "timestamp": last_ts, "display": first_msg[:100], "tokens": tokens, "mcp_tools": mcp_tools, "has_plan": has_plan, "plans": plans, "model": model, "artifacts": artifacts, "cost": tokens["cost"]})
-                    except: continue
+                    except Exception: continue
 
     # 5. Vibe
     if VIBE_DIR.exists():
@@ -1040,14 +1167,15 @@ def _scan_sessions_sync():
                 with open(cf, "r", encoding="utf-8", errors="replace") as f:
                     data = json.load(f); meta = data.get("metadata", {}); sid = meta.get("session_id")
                     if not sid: continue
-                    ts = _aware(datetime.fromisoformat(meta.get("start_time"))) if meta.get("start_time") else _now()
+                    ts = _aware(datetime.fromisoformat(meta.get("start_time"))) if meta.get("start_time") else _file_mtime_utc(cf)
                     stats = meta.get("stats", {})
                     tokens = {"input": stats.get("session_prompt_tokens", 0), "output": stats.get("session_completion_tokens", 0), "cached": stats.get("context_tokens", 0), "total": stats.get("session_total_llm_tokens", 0)}
                     mcp_tools = [t.get("function", {}).get("name") for t in meta.get("tools_available", []) if t.get("function", {}).get("name")]
                     model = meta.get("agent_config", {}).get("active_model")
                     project_path = apply_alias(meta.get("environment", {}).get("working_directory", "unknown"))
-                    sessions.append({"id": sid, "agent": "vibe", "project": project_path, "timestamp": ts, "display": f"Vibe Session {sid[:8]}", "tokens": tokens, "mcp_tools": list(set(mcp_tools)), "has_plan": False, "plans": [], "model": model, "artifacts": []})
-            except: continue
+                    tokens["cost"] = calculate_cost(model, tokens["input"], tokens["output"], tokens["cached"])
+                    sessions.append({"id": sid, "agent": "vibe", "project": project_path, "timestamp": ts, "display": f"Vibe Session {sid[:8]}", "tokens": tokens, "mcp_tools": list(set(mcp_tools)), "has_plan": False, "plans": [], "model": model, "artifacts": [], "cost": tokens["cost"]})
+            except Exception: continue
 
     # 6. Cursor
     if CURSOR_DIR.exists():
@@ -1060,7 +1188,7 @@ def _scan_sessions_sync():
                         folder = data.get("folder")
                         if folder:
                             cursor_map[ws.parent.name] = unquote(folder.replace("file://", ""))
-                except: continue
+                except Exception: continue
 
         for pd in (CURSOR_DIR / "projects").glob("*"):
             if pd.is_dir():
@@ -1087,7 +1215,7 @@ def _scan_sessions_sync():
                             if term_dir.exists():
                                 for tf in term_dir.glob("*.txt"):
                                     artifacts.append({"name": f"Terminal: {tf.name}", "path": str(tf), "type": "terminal"})
-                        except: pass
+                        except Exception: pass
 
                         if cf.exists():
                             try:
@@ -1103,7 +1231,7 @@ def _scan_sessions_sync():
                                     for line in f:
                                         try:
                                             data = json.loads(line)
-                                        except: continue
+                                        except Exception: continue
                                         msg = data.get("message", {}) if isinstance(data.get("message"), dict) else {}
                                         if data.get("role") == "user" and not first_msg:
                                             c = msg.get("content", [])
@@ -1114,9 +1242,12 @@ def _scan_sessions_sync():
                                         if data.get("role") == "assistant":
                                             if msg.get("model") and not model: model = msg.get("model")
                                             usage = msg.get("usage", {}) if isinstance(msg.get("usage"), dict) else {}
-                                            tokens["input"] += usage.get("input_tokens", 0)
-                                            tokens["output"] += usage.get("output_tokens", 0)
-                                            tokens["cached"] += usage.get("cache_read_input_tokens", 0)
+                                            cr = usage.get("cache_read_input_tokens", 0) or 0
+                                            cc = usage.get("cache_creation_input_tokens", 0) or 0
+                                            tokens["input"]  += (usage.get("input_tokens", 0) or 0) + cc
+                                            tokens["output"] += usage.get("output_tokens", 0) or 0
+                                            tokens["cached"] = max(tokens["cached"], cr)
+                                            tokens["_cached_sum"] = tokens.get("_cached_sum", 0) + cr
                                             for item in msg.get("content", []) if isinstance(msg.get("content"), list) else []:
                                                 if item.get("type") == "tool_use":
                                                     name = item.get("name")
@@ -1132,9 +1263,9 @@ def _scan_sessions_sync():
                                                         has_plan = True
                                                         plans.append({"session_id": sid, "agent": "cursor", "timestamp": mtime, "content": t_text})
                                 tokens["total"] = tokens["input"] + tokens["output"] + tokens["cached"]
-                                tokens["cost"] = calculate_cost(model, tokens["input"], tokens["output"], tokens["cached"])
+                                tokens["cost"] = calculate_cost(model, tokens["input"], tokens["output"], tokens.get("_cached_sum", tokens["cached"]))
                                 sessions.append({"id": sid, "agent": "cursor", "project": project_path, "timestamp": mtime, "display": first_msg[:100], "tokens": tokens, "mcp_tools": mcp_tools, "subagents": subagents, "has_plan": has_plan, "plans": plans, "model": model, "artifacts": artifacts, "cost": tokens["cost"]})
-                            except: continue
+                            except Exception: continue
 
     # 7. Copilot
     if VSCODE_STORAGE.exists():
@@ -1154,28 +1285,32 @@ def _scan_sessions_sync():
                             
                             # Fallback to creation date if no requests
                             creation_ts = data.get("creationDate") or data.get("timestamp")
-                            last_ts = datetime.fromtimestamp(creation_ts / 1000, tz=timezone.utc) if isinstance(creation_ts, (int, float)) else _now()
+                            last_ts = datetime.fromtimestamp(creation_ts / 1000, tz=timezone.utc) if isinstance(creation_ts, (int, float)) else _file_mtime_utc(cf)
                             
                             for req in data.get("requests", []):
-                                if not first_msg: first_msg = req.get("message", {}).get("text", "")
+                                msg_text = req.get("message", {}).get("text", "") or ""
+                                if not first_msg: first_msg = msg_text
                                 if req.get("modelId") and not model:
                                     model = req.get("modelId").split("/")[-1]
                                 if req.get("timestamp"):
                                     ts_val = req.get("timestamp")
-                                    if isinstance(ts_val, (int, float)): 
+                                    if isinstance(ts_val, (int, float)):
                                         req_ts = datetime.fromtimestamp(ts_val / 1000, tz=timezone.utc)
                                         if req_ts > last_ts: last_ts = req_ts
+                                # Copilot doesn't record input tokens; estimate from prompt chars (~4 chars/token).
+                                tokens["input"] += len(msg_text) // 4
                                 if "thinking" in req:
-                                    tokens["total"] += req["thinking"].get("tokens", 0)
+                                    tokens["output"] += req["thinking"].get("tokens", 0) or 0
                                     t_text = req["thinking"].get("text", "")
                                     if "plan" in t_text.lower() and len(t_text) > 100:
                                         plans.append({"session_id": sid, "agent": "copilot", "timestamp": last_ts, "content": t_text})
                                 if "response" in req:
-                                    for part in req["response"]: tokens["total"] += part.get("tokens", 0)
+                                    for part in req["response"]: tokens["output"] += part.get("tokens", 0) or 0
+                            tokens["total"] = tokens["input"] + tokens["output"] + tokens["cached"]
                             tokens["cost"] = calculate_cost(model, tokens["input"], tokens["output"], tokens["cached"])
                             sessions.append({"id": sid, "agent": "copilot", "project": project_path, "timestamp": last_ts, "display": first_msg[:100], "tokens": tokens, "mcp_tools": [], "has_plan": len(plans) > 0, "plans": plans, "model": model, "artifacts": [], "cost": tokens["cost"]})
-                    except: continue
-            except: continue
+                    except Exception: continue
+            except Exception: continue
 
     # 8. OpenCode (SQLite: session / message / part)
     if OPENCODE_DB.exists():
@@ -1199,7 +1334,7 @@ def _scan_sessions_sync():
                     for mrow in conn.execute("SELECT data FROM message WHERE session_id=? ORDER BY time_created", (sid,)):
                         try:
                             mdata = json.loads(mrow["data"] or "{}")
-                        except: continue
+                        except Exception: continue
                         if mdata.get("role") == "assistant":
                             if not model:
                                 mi = mdata.get("model") or {}
@@ -1210,7 +1345,7 @@ def _scan_sessions_sync():
                     for prow in conn.execute("SELECT data FROM part WHERE session_id=? ORDER BY time_created", (sid,)):
                         try:
                             pdata = json.loads(prow["data"] or "{}")
-                        except: continue
+                        except Exception: continue
                         ptype = pdata.get("type")
                         if ptype == "text" and not first_user:
                             txt = pdata.get("text") or ""
@@ -1220,11 +1355,16 @@ def _scan_sessions_sync():
                             if tname and tname not in mcp_tools: mcp_tools.append(tname)
                         if ptype == "step-finish":
                             tk = pdata.get("tokens") or {}
-                            tokens["input"] += tk.get("input", 0) or 0
-                            tokens["output"] += tk.get("output", 0) or 0
                             cache = tk.get("cache") or {}
-                            tokens["cached"] += (cache.get("read", 0) or 0) + (cache.get("write", 0) or 0)
+                            cache_write = (cache.get("write", 0) or 0)
+                            # cache writes are billed at input rate (~1.25x on Anthropic, but
+                            # calculate_cost only exposes one cached-read parameter, so fold
+                            # writes into input as the closest available approximation).
+                            tokens["input"]  += (tk.get("input", 0) or 0) + cache_write
+                            tokens["output"] += tk.get("output", 0) or 0
+                            tokens["cached"] += (cache.get("read", 0) or 0)
                     tokens["total"] = tokens["input"] + tokens["output"] + tokens["cached"]
+                    tokens["cost"] = calculate_cost(model, tokens["input"], tokens["output"], tokens["cached"])
                     project_path = srow["directory"] or "unknown"
                     title = srow["title"] or ""
                     display = (first_user or title)[:100]
@@ -1237,7 +1377,8 @@ def _scan_sessions_sync():
                     sessions.append({
                         "id": sid, "agent": "opencode", "project": apply_alias(srow["directory"] or "unknown"), "timestamp": ts,
                         "display": display, "tokens": tokens, "mcp_tools": mcp_tools,
-                        "has_plan": has_plan, "plans": plans, "model": model, "artifacts": []
+                        "has_plan": has_plan, "plans": plans, "model": model, "artifacts": [],
+                        "cost": tokens["cost"],
                     })
             finally:
                 conn.close()
@@ -1410,7 +1551,7 @@ async def get_artifact(path: str):
         try:
             if p.resolve().is_relative_to(a.resolve()):
                 is_safe = True; break
-        except: continue
+        except Exception: continue
 
     if not is_safe or not p.exists() or not p.is_file():
         from fastapi import HTTPException
@@ -1455,9 +1596,9 @@ async def get_session_detail(session_id: str, agent: str):
                         try:
                             ts = _aware(datetime.fromisoformat(data["timestamp"].replace('Z', '+00:00')))
                             data["normalized_timestamp"] = ts.timestamp() * 1000
-                        except: pass
+                        except Exception: pass
                     events.append(data)
-                except: continue
+                except Exception: continue
         return events
     elif agent == "codex":
         files = list(CODEX_DIR.glob(f"sessions/**/rollout-*{session_id}*.jsonl"))
@@ -1471,9 +1612,9 @@ async def get_session_detail(session_id: str, agent: str):
                         try:
                             ts = _aware(datetime.fromisoformat(data["timestamp"].replace('Z', '+00:00')))
                             data["normalized_timestamp"] = ts.timestamp() * 1000
-                        except: pass
+                        except Exception: pass
                     events.append(data)
-                except: continue
+                except Exception: continue
         return events
     elif agent in ["gemini", "antigravity"]:
         # Antigravity brain-based session (has no .json file; synthesize from markdown artifacts)
@@ -1482,7 +1623,7 @@ async def get_session_detail(session_id: str, agent: str):
             messages = []
             base_ts = None
             try: base_ts = brain_dir.stat().st_mtime * 1000
-            except: base_ts = 0
+            except Exception: base_ts = 0
             for i, (fname, role, label) in enumerate([
                 ("task.md", "user", "User task"),
                 ("implementation_plan.md", "gemini", "Implementation plan"),
@@ -1491,7 +1632,7 @@ async def get_session_detail(session_id: str, agent: str):
                 fp = brain_dir / fname
                 if not fp.exists(): continue
                 try: body = fp.read_text(errors="ignore")
-                except: continue
+                except Exception: continue
                 text = f"**{label}**\n\n{body}"
                 # User expects array form; assistant ("gemini") renderer expects a string.
                 content = [{"type": "text", "text": text}] if role == "user" else text
@@ -1520,7 +1661,7 @@ async def get_session_detail(session_id: str, agent: str):
                         try:
                             ts = _aware(datetime.fromisoformat(msg["timestamp"].replace('Z', '+00:00')))
                             msg["normalized_timestamp"] = ts.timestamp() * 1000
-                        except: pass
+                        except Exception: pass
                 return data
         # Antigravity log-only sessions: synthesize messages from the per-tmp-dir
         # logs.json that records every user/assistant turn with its sessionId.
@@ -1585,9 +1726,9 @@ async def get_session_detail(session_id: str, agent: str):
                         try:
                             ts = _aware(datetime.fromisoformat(data["timestamp"].replace('Z', '+00:00')))
                             data["normalized_timestamp"] = ts.timestamp() * 1000
-                        except: pass
+                        except Exception: pass
                     events.append(data)
-                except: continue
+                except Exception: continue
         return events
     elif agent == "vibe":
         short = (session_id or "").split("-")[0]
@@ -1600,7 +1741,7 @@ async def get_session_detail(session_id: str, agent: str):
                     with open(cf, "r", encoding="utf-8", errors="replace") as f:
                         if json.load(f).get("metadata", {}).get("session_id") == session_id:
                             files = [cf]; break
-                except: continue
+                except Exception: continue
         if not files: return {"error": "Not found"}
         with open(files[0], "r", encoding="utf-8", errors="replace") as f:
             data = json.load(f)
@@ -1611,7 +1752,7 @@ async def get_session_detail(session_id: str, agent: str):
                     try:
                         ts = _aware(datetime.fromisoformat(evt["timestamp"]))
                         evt["normalized_timestamp"] = ts.timestamp() * 1000
-                    except: pass
+                    except Exception: pass
                 events.append(evt)
             return events
     elif agent == "cursor":
@@ -1620,7 +1761,7 @@ async def get_session_detail(session_id: str, agent: str):
         events = []
         base_ts = None
         try: base_ts = files[0].stat().st_mtime * 1000
-        except: base_ts = 0
+        except Exception: base_ts = 0
         with open(files[0], "r", encoding="utf-8", errors="replace") as f:
             idx = 0
             for line in f:
@@ -1634,7 +1775,7 @@ async def get_session_detail(session_id: str, agent: str):
                     data["normalized_timestamp"] = (base_ts or 0) + idx * 1000
                     events.append(data)
                     idx += 1
-                except: continue
+                except Exception: continue
         return events
     elif agent == "copilot":
         files = list(VSCODE_STORAGE.glob(f"**/chatSessions/{session_id}.json"))
@@ -1662,13 +1803,13 @@ async def get_session_detail(session_id: str, agent: str):
             for mrow in conn.execute("SELECT id, data FROM message WHERE session_id=? ORDER BY time_created", (session_id,)):
                 try:
                     md = json.loads(mrow["data"] or "{}")
-                except: md = {}
+                except Exception: md = {}
                 role_by_msg[mrow["id"]] = md.get("role") or "assistant"
             events: List[Dict[str, Any]] = []
             for prow in conn.execute("SELECT message_id, time_created, data FROM part WHERE session_id=? ORDER BY time_created", (session_id,)):
                 try:
                     p = json.loads(prow["data"] or "{}")
-                except: continue
+                except Exception: continue
                 role = role_by_msg.get(prow["message_id"], "assistant")
                 ts_ms = prow["time_created"]
                 base = {"timestamp": ts_ms, "normalized_timestamp": ts_ms}
@@ -1723,7 +1864,7 @@ async def get_session_detail(session_id: str, agent: str):
                             if tcs_raw:
                                 try:
                                     tcs = json.loads(tcs_raw)
-                                except: tcs = []
+                                except Exception: tcs = []
                                 if isinstance(tcs, list):
                                     for tc in tcs:
                                         if not isinstance(tc, dict): continue
@@ -1734,7 +1875,7 @@ async def get_session_detail(session_id: str, agent: str):
                                         args: Any = None
                                         if isinstance(args_raw, str):
                                             try: args = json.loads(args_raw)
-                                            except: args = args_raw
+                                            except Exception: args = args_raw
                                         else:
                                             args = args_raw
                                         events.append({"type": "tool_call", "payload": {
@@ -1779,7 +1920,9 @@ async def get_projects(include_hidden: bool = False):
     for s in sessions:
         proj = s["project"]
         if proj not in projects:
-            projects[proj] = {"name": proj.split("/")[-1], "path": proj, "session_count": 0, "agents": set(), "mcp_tools": set(), "subagent_count": 0, "plan_count": 0, "tokens": {"input": 0, "output": 0, "cached": 0, "total": 0, "cost": 0.0}, "plans": []}
+            # Basename that handles both POSIX (/) and Windows (\) separators
+            proj_name = (os.path.basename((proj or "").replace("\\", "/").rstrip("/")) or proj or "unknown").strip()
+            projects[proj] = {"name": proj_name, "path": proj, "session_count": 0, "agents": set(), "mcp_tools": set(), "subagent_count": 0, "plan_count": 0, "tokens": {"input": 0, "output": 0, "cached": 0, "total": 0, "cost": 0.0}, "plans": []}
         projects[proj]["session_count"] += 1; projects[proj]["agents"].add(s["agent"])
         for t in s.get("mcp_tools", []): projects[proj]["mcp_tools"].add(t)
         if s.get("has_plan"): projects[proj]["plan_count"] += 1
@@ -1814,7 +1957,7 @@ async def get_projects(include_hidden: bool = False):
             agents_dir = Path(p["path"]) / ".agents" / "skills"
             if agents_dir.exists():
                 p["configured_subagent_count"] += len(list(agents_dir.glob("*/SKILL.md")))
-        except: pass
+        except Exception: pass
     out = list(projects.values())
     if not include_hidden:
         out = [p for p in out if not p["hidden"]]
@@ -1892,10 +2035,11 @@ async def post_aliases(aliases: Dict[str, str]):
 
 
 def _cache_hit_pct(input_tokens: int, cached_tokens: int) -> Optional[float]:
+    """Return cache hit ratio as 0-100, matching the Hermes overlay's scale."""
     denom = input_tokens + cached_tokens
     if denom <= 0:
         return None
-    return cached_tokens / denom
+    return round((cached_tokens / denom) * 100, 1)
 
 
 @app.get("/analytics")
@@ -1919,7 +2063,9 @@ async def get_analytics():
         for k in ["input", "output", "cached", "total"]: by_model[model_name][k] += st.get(k, 0)
         by_model[model_name]["cost"] += scost
         by_model[model_name]["session_count"] += 1
-        day = s["timestamp"].strftime("%Y-%m-%d")
+        # Bucket by LOCAL day, not UTC — a 9pm-PT session shouldn't land on the
+        # next day just because the timestamp crossed midnight UTC.
+        day = s["timestamp"].astimezone().strftime("%Y-%m-%d")
         if day not in by_day: by_day[day] = {"total": 0, "input": 0, "output": 0, "cached": 0, "cost": 0.0}
         for k in ["input", "output", "cached", "total"]: by_day[day][k] += st.get(k, 0)
         by_day[day]["cost"] += scost
@@ -1963,7 +2109,7 @@ def _parse_skill_md(p: Path):
     """Read SKILL.md frontmatter; return {name, description}."""
     try:
         text = p.read_text(errors="ignore")
-    except: return None
+    except Exception: return None
     
     name = p.parent.name
     description = ""
@@ -1978,7 +2124,7 @@ def _parse_skill_md(p: Path):
                         name = str(frontmatter["name"])
                     if frontmatter.get("description"):
                         description = str(frontmatter["description"])
-            except:
+            except Exception:
                 # Fallback to manual line parsing if YAML is slightly malformed
                 for line in text[3:end].splitlines():
                     if ":" in line:
@@ -2013,7 +2159,7 @@ def _collect_skills(base: Path, scope: str, agent: str):
 
 def _read_json(p: Path):
     try: return json.loads(p.read_text())
-    except: return None
+    except Exception: return None
 
 def _mcps_from_claude_settings(p: Path, scope: str):
     d = _read_json(p) or {}
@@ -2034,7 +2180,7 @@ def _mcps_from_json(p: Path, scope: str, agent: str):
 def _mcps_from_codex_toml(p: Path, scope: str):
     if not p.exists(): return []
     try: txt = p.read_text()
-    except: return []
+    except Exception: return []
     out = []
     current = None
     for line in txt.splitlines():
@@ -2056,7 +2202,7 @@ def _collect_subagents(base: Path, scope: str, agent: str):
     if not d.exists(): return out
     for md in d.rglob("*.md"):
         try: txt = md.read_text(errors="ignore")
-        except: continue
+        except Exception: continue
         name = md.stem
         description = ""
         tools = ""
@@ -2071,7 +2217,7 @@ def _collect_subagents(base: Path, scope: str, agent: str):
                         if fm.get("description"): description = str(fm["description"])
                         if fm.get("tools"): tools = str(fm["tools"])
                         if fm.get("model"): model = str(fm["model"])
-                except:
+                except Exception:
                     for line in txt[3:end].splitlines():
                         if ":" in line:
                             k, v = line.split(":", 1)
@@ -2095,7 +2241,7 @@ def _collect_commands(base: Path, scope: str, agent: str):
         for md in d.rglob("*.md"):
             try:
                 txt = md.read_text(errors="ignore")
-            except: continue
+            except Exception: continue
             name = md.stem
             description = ""
             if txt.startswith("---"):
@@ -2105,7 +2251,7 @@ def _collect_commands(base: Path, scope: str, agent: str):
                         fm = yaml.safe_load(txt[3:end])
                         if isinstance(fm, dict) and fm.get("description"):
                             description = str(fm["description"])
-                    except:
+                    except Exception:
                         for line in txt[3:end].splitlines():
                             if ":" in line:
                                 k, v = line.split(":", 1)
@@ -2116,7 +2262,7 @@ def _collect_commands(base: Path, scope: str, agent: str):
 
 def _memory_preview(p: Path, scope: str, agent: str):
     try: txt = p.read_text(errors="ignore")
-    except: return None
+    except Exception: return None
     return {"scope": scope, "agent": agent, "path": str(p), "name": p.name, "preview": txt[:2000], "truncated": len(txt) > 2000, "size": len(txt)}
 
 # ---- Plugin/extension collection (v1) ---------------------------------------
@@ -2191,7 +2337,7 @@ def _collect_plugins_vscode_style(ext_dir: Path, scope: str, agent: str, marketp
                     if isinstance(ident, str): enabled_set.add(ident.lower())
     out = []
     try: entries = list(ext_dir.iterdir())
-    except: return []
+    except Exception: return []
     for d in entries:
         if not d.is_dir(): continue
         pkg = _read_json(d / "package.json")
@@ -2227,7 +2373,7 @@ def _collect_plugins_gemini_style(ext_root: Path, scope: str, agent: str,
         if isinstance(d, dict): enablement = d
     out = []
     try: entries = list(ext_root.iterdir())
-    except: return []
+    except Exception: return []
     for ext_dir in entries:
         if not ext_dir.is_dir(): continue
         manifest = next((ext_dir / n for n in manifest_names if (ext_dir / n).exists()), None)
@@ -2305,15 +2451,15 @@ def _collect_plugins_codex(scope: str) -> List[dict]:
     if scope != "user" or not CODEX_PLUGIN_CACHE.exists(): return []
     out = []
     try: marketplaces = list(CODEX_PLUGIN_CACHE.iterdir())
-    except: return []
+    except Exception: return []
     for mp in marketplaces:
         if not mp.is_dir(): continue
         try: plugins = list(mp.iterdir())
-        except: continue
+        except Exception: continue
         for plugin in plugins:
             if not plugin.is_dir(): continue
             try: versions = [v for v in plugin.iterdir() if v.is_dir()]
-            except: continue
+            except Exception: continue
             if not versions: continue
             ver_dir = sorted(versions, key=lambda v: v.name)[-1]
             out.append({
@@ -2403,7 +2549,7 @@ async def get_config(project: Optional[str] = None):
             if name in seen_cmds: continue
             seen_cmds.add(name)
             try: txt = md.read_text(errors="ignore")
-            except: continue
+            except Exception: continue
             description = ""
             if txt.startswith("---"):
                 end = txt.find("---", 3)

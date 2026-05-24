@@ -41,6 +41,7 @@ npm-debug.log*
 chintaku
 .claude/settings.local.json
 .claude/agents/
+.claude/commands/
 feature/
 
 # --- Graphify (knowledge graph build artifacts) ---
