@@ -2977,6 +2977,15 @@ async def list_ollama_models():
     from summarizers.ollama import list_installed_models
     return {"models": list_installed_models()}
 
+
+@app.get("/summarizer/codex/models")
+async def list_codex_models():
+    """Curated cheaper-tier OpenAI models for users without Pro/Plus or with
+    limited API access. Static list — the Codex CLI doesn't expose enumerable
+    model discovery."""
+    from summarizers.codex import SUGGESTED_MODELS
+    return {"models": SUGGESTED_MODELS}
+
 @app.get("/sessions/{session_id}/summary")
 async def get_summary(session_id: str):
     cached = _summaries.get_cached(session_id)

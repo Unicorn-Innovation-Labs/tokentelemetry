@@ -60,7 +60,7 @@ export default function OnboardingModal() {
       await putSummarizerConfig({
         enabled: selected !== null,
         backend: selected,
-        model: selected === "ollama" ? model : null,
+        model: (selected === "ollama" || selected === "codex") ? model : null,
       });
       dismiss();
     } catch (e) {
@@ -117,7 +117,10 @@ export default function OnboardingModal() {
           <BackendPicker
             backends={backends}
             selected={selected}
-            onSelect={(name) => { setSelected(name); if (name !== "ollama") setModel(null); }}
+            onSelect={(name) => {
+              setSelected(name);
+              if (name !== "ollama" && name !== "codex") setModel(null);
+            }}
             model={model}
             onModelChange={setModel}
           />

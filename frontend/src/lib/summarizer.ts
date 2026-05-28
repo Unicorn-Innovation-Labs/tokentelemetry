@@ -72,6 +72,14 @@ export interface OllamaModel {
 export const listOllamaModels = () =>
   api<{ models: OllamaModel[] }>("/summarizer/ollama/models").then((r) => r.models);
 
+export interface CodexModel {
+  name: string;
+  label: string;
+  hint: string;
+}
+export const listCodexModels = () =>
+  api<{ models: CodexModel[] }>("/summarizer/codex/models").then((r) => r.models);
+
 export const putSummarizerConfig = (cfg: SummarizerConfig) =>
   api<SummarizerConfig>("/config/summarizer", {
     method: "PUT",

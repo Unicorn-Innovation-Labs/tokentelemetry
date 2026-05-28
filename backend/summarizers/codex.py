@@ -28,10 +28,27 @@ from .base import BaseSummarizer, SummarizerError, run_cli, _ensure_cwd
 _DEFAULT_TIMEOUT = int(os.environ.get("TT_CODEX_TIMEOUT", "300"))
 
 
+# Curated cheaper-tier OpenAI models that work via API key without a Pro/Plus
+# subscription. The frontend shows these in the model picker so non-Pro users
+# can avoid the (often gated) default. "Auto" passes no --model and lets the
+# Codex CLI use whatever's configured in ~/.codex/config.toml.
+SUGGESTED_MODELS: list[dict] = [
+    {"name": "gpt-5-mini",   "label": "GPT-5 mini",  "hint": "Fast, cheap, good for summaries"},
+    {"name": "gpt-5-nano",   "label": "GPT-5 nano",  "hint": "Cheapest GPT-5 tier"},
+    {"name": "gpt-4o-mini",  "label": "GPT-4o mini", "hint": "Reliable fallback if GPT-5 isn't on your account"},
+    {"name": "o3-mini",      "label": "o3 mini",     "hint": "Reasoning model — slower, deeper"},
+    {"name": "gpt-5",        "label": "GPT-5",       "hint": "Requires Pro/Plus or sufficient API tier"},
+    {"name": "gpt-5.5",      "label": "GPT-5.5",     "hint": "Requires Pro/Plus or sufficient API tier"},
+]
+
+
 class CodexSummarizer(BaseSummarizer):
     name = "codex"
     display_name = "Codex"
     binary = "codex"
+
+    def __init__(self, model: Optional[str] = None) -> None:
+        self._model = model
 
     def summarize(self, prompt: str, *, timeout: Optional[int] = None) -> str:
         with tempfile.NamedTemporaryFile(
@@ -39,19 +56,24 @@ class CodexSummarizer(BaseSummarizer):
         ) as f:
             last_message = f.name
         try:
+            args = [
+                self.binary,
+                "exec",
+                "--dangerously-bypass-approvals-and-sandbox",
+                "--skip-git-repo-check",
+                "-o",
+                last_message,
+            ]
+            # Only override the model when the user explicitly picked one.
+            # Otherwise let codex honor ~/.codex/config.toml.
+            if self._model:
+                args += ["-m", self._model]
+            # `-` tells codex to read the prompt from stdin.
+            args += ["-"]
             # stdout carries a banner + event log; the clean final message is
-            # written to ``last_message`` by ``-o``. ``-`` tells codex to read
-            # the prompt from stdin.
+            # written to ``last_message`` by ``-o``.
             run_cli(
-                [
-                    self.binary,
-                    "exec",
-                    "--dangerously-bypass-approvals-and-sandbox",
-                    "--skip-git-repo-check",
-                    "-o",
-                    last_message,
-                    "-",
-                ],
+                args,
                 stdin=prompt,
                 cwd=_ensure_cwd(),
                 timeout=timeout if timeout is not None else _DEFAULT_TIMEOUT,

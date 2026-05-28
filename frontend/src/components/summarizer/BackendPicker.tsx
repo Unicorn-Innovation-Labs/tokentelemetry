@@ -5,9 +5,8 @@ import { Check, Ban } from "lucide-react";
 import { getAgent } from "@/lib/agents";
 import { cn } from "@/lib/cn";
 import {
-  listOllamaModels,
-  type OllamaModel,
-  type SummarizerBackend,
+  listCodexModels, listOllamaModels,
+  type CodexModel, type OllamaModel, type SummarizerBackend,
 } from "@/lib/summarizer";
 
 interface BackendPickerProps {
@@ -17,9 +16,9 @@ interface BackendPickerProps {
   onSelect: (backend: string | null) => void;
   /** Whether to render the "no AI summaries" opt-out tile. */
   allowSkip?: boolean;
-  /** Currently chosen Ollama model (only meaningful when selected === "ollama"). */
+  /** Currently chosen model (meaningful for Ollama + Codex). */
   model?: string | null;
-  /** Notified when the user picks a different Ollama model. */
+  /** Notified when the user picks a different model. */
   onModelChange?: (model: string | null) => void;
 }
 
@@ -27,28 +26,40 @@ interface BackendPickerProps {
  * Shared backend selector — reused by the first-run onboarding modal and the
  * settings surface. Tints each option by its agent hex via getAgent().
  *
- * When Ollama is the active tile, a sub-dropdown appears so the user can pin
- * a specific installed model (Ollama can otherwise be very slow on a heavy
- * default). Model list is fetched lazily on first Ollama selection.
+ * For Ollama and Codex, a sub-dropdown appears so the user can pin a specific
+ * model — useful when the default model isn't installed (Ollama) or isn't
+ * available on the user's API tier (Codex / no Pro/Plus). Model lists are
+ * fetched lazily on first selection of that backend.
  */
 export function BackendPicker({
   backends, selected, onSelect, allowSkip = true,
   model = null, onModelChange,
 }: BackendPickerProps) {
-  const [models, setModels] = useState<OllamaModel[] | null>(null);
-  const [modelsLoading, setModelsLoading] = useState(false);
-  const [modelsErr, setModelsErr] = useState<string | null>(null);
+  const [ollamaModels, setOllamaModels] = useState<OllamaModel[] | null>(null);
+  const [ollamaErr, setOllamaErr] = useState<string | null>(null);
+  const [ollamaLoading, setOllamaLoading] = useState(false);
 
-  // Lazy-load Ollama models the first time the Ollama tile is selected, so
-  // users who never pick it don't pay the `ollama list` shell-out.
+  const [codexModels, setCodexModels] = useState<CodexModel[] | null>(null);
+  const [codexErr, setCodexErr] = useState<string | null>(null);
+  const [codexLoading, setCodexLoading] = useState(false);
+
+  // Lazy-load the model list for whichever backend the user picks.
   useEffect(() => {
-    if (selected !== "ollama" || models !== null || modelsLoading) return;
-    setModelsLoading(true);
-    listOllamaModels()
-      .then((list) => setModels(list))
-      .catch((e) => setModelsErr(e instanceof Error ? e.message : String(e)))
-      .finally(() => setModelsLoading(false));
-  }, [selected, models, modelsLoading]);
+    if (selected === "ollama" && ollamaModels === null && !ollamaLoading) {
+      setOllamaLoading(true);
+      listOllamaModels()
+        .then(setOllamaModels)
+        .catch((e) => setOllamaErr(e instanceof Error ? e.message : String(e)))
+        .finally(() => setOllamaLoading(false));
+    }
+    if (selected === "codex" && codexModels === null && !codexLoading) {
+      setCodexLoading(true);
+      listCodexModels()
+        .then(setCodexModels)
+        .catch((e) => setCodexErr(e instanceof Error ? e.message : String(e)))
+        .finally(() => setCodexLoading(false));
+    }
+  }, [selected, ollamaModels, ollamaLoading, codexModels, codexLoading]);
 
   return (
     <div className="space-y-3">
@@ -57,7 +68,6 @@ export function BackendPicker({
           const meta = getAgent(b.name);
           const Icon = meta.icon;
           const active = selected === b.name;
-          const isOllama = b.name === "ollama";
           return (
             <div key={b.name}>
               <button
@@ -92,40 +102,40 @@ export function BackendPicker({
                 )}
               </button>
 
-              {/* Ollama-specific model picker — appears below the tile when active. */}
-              {active && isOllama && (
-                <div className="mt-2 ml-11 mr-1">
-                  <label className="block text-[10.5px] font-medium uppercase tracking-[0.1em] text-[var(--tt-fg-muted)] mb-1.5">
-                    Model
-                  </label>
-                  {modelsLoading ? (
-                    <div className="text-[12px] text-[var(--tt-fg-dim)] italic">Loading installed models…</div>
-                  ) : modelsErr ? (
-                    <div className="text-[12px] text-[var(--tt-danger-fg)]">{modelsErr}</div>
-                  ) : models && models.length === 0 ? (
-                    <div className="text-[12px] text-[var(--tt-fg-dim)]">
-                      No Ollama models installed. Run <code className="font-mono">ollama pull llama3</code> (or similar) first.
-                    </div>
-                  ) : models ? (
-                    <select
-                      value={model ?? ""}
-                      onChange={(e) => onModelChange?.(e.target.value || null)}
-                      className="w-full h-9 px-3 rounded-md bg-[var(--tt-sunken)] border border-[var(--tt-border-strong)] text-[13px] text-[var(--tt-fg)] focus:outline-none focus:border-[var(--tt-border-focus)] transition-colors"
-                    >
-                      <option value="">Auto — use first installed</option>
-                      {models.map((m) => (
-                        <option key={m.name} value={m.name}>
-                          {m.name}{m.size ? ` · ${m.size}` : ""}
-                        </option>
-                      ))}
-                    </select>
-                  ) : null}
-                  {model && (
-                    <p className="text-[10.5px] text-[var(--tt-fg-dim)] mt-1.5">
-                      Local inference is CPU-bound — larger models will take several minutes per summary.
-                    </p>
-                  )}
-                </div>
+              {active && b.name === "ollama" && (
+                <ModelDropdown
+                  label="Model"
+                  value={model}
+                  onChange={onModelChange}
+                  loading={ollamaLoading}
+                  error={ollamaErr}
+                  empty={ollamaModels !== null && ollamaModels.length === 0}
+                  emptyHint={<>No Ollama models installed. Run <code className="font-mono">ollama pull llama3</code> (or similar) first.</>}
+                  options={(ollamaModels || []).map((m) => ({
+                    value: m.name,
+                    label: m.size ? `${m.name} · ${m.size}` : m.name,
+                  }))}
+                  autoOption="Auto — use first installed"
+                  hint={model ? "Local inference is CPU-bound — larger models take several minutes per summary." : undefined}
+                />
+              )}
+
+              {active && b.name === "codex" && (
+                <ModelDropdown
+                  label="Model"
+                  value={model}
+                  onChange={onModelChange}
+                  loading={codexLoading}
+                  error={codexErr}
+                  empty={false}
+                  options={(codexModels || []).map((m) => ({
+                    value: m.name,
+                    label: m.label,
+                    hint: m.hint,
+                  }))}
+                  autoOption="Auto — use Codex default (~/.codex/config.toml)"
+                  hint="Pick a cheaper model if you don't have ChatGPT Pro/Plus or hit 'incorrect API key' / quota errors on the default."
+                />
               )}
             </div>
           );
@@ -159,6 +169,56 @@ export function BackendPicker({
           </button>
         )}
       </div>
+    </div>
+  );
+}
+
+interface ModelDropdownProps {
+  label: string;
+  value: string | null;
+  onChange?: (v: string | null) => void;
+  loading: boolean;
+  error: string | null;
+  empty: boolean;
+  emptyHint?: React.ReactNode;
+  options: { value: string; label: string; hint?: string }[];
+  autoOption: string;
+  hint?: string;
+}
+
+/** Shared dropdown UI for the model sub-picker. */
+function ModelDropdown({
+  label, value, onChange, loading, error, empty, emptyHint,
+  options, autoOption, hint,
+}: ModelDropdownProps) {
+  return (
+    <div className="mt-2 ml-11 mr-1">
+      <label className="block text-[10.5px] font-medium uppercase tracking-[0.1em] text-[var(--tt-fg-muted)] mb-1.5">
+        {label}
+      </label>
+      {loading ? (
+        <div className="text-[12px] text-[var(--tt-fg-dim)] italic">Loading…</div>
+      ) : error ? (
+        <div className="text-[12px] text-[var(--tt-danger-fg)]">{error}</div>
+      ) : empty ? (
+        <div className="text-[12px] text-[var(--tt-fg-dim)]">{emptyHint}</div>
+      ) : (
+        <select
+          value={value ?? ""}
+          onChange={(e) => onChange?.(e.target.value || null)}
+          className="w-full h-9 px-3 rounded-md bg-[var(--tt-sunken)] border border-[var(--tt-border-strong)] text-[13px] text-[var(--tt-fg)] focus:outline-none focus:border-[var(--tt-border-focus)] transition-colors"
+        >
+          <option value="">{autoOption}</option>
+          {options.map((o) => (
+            <option key={o.value} value={o.value} title={o.hint}>
+              {o.label}{o.hint ? ` — ${o.hint}` : ""}
+            </option>
+          ))}
+        </select>
+      )}
+      {hint && (
+        <p className="text-[10.5px] text-[var(--tt-fg-dim)] mt-1.5">{hint}</p>
+      )}
     </div>
   );
 }

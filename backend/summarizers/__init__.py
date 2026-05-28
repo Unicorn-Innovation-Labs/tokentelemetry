@@ -29,11 +29,13 @@ _BY_NAME: Dict[str, BaseSummarizer] = {s.name: s for s in _ALL}
 
 
 def get_summarizer(name: str, model: Optional[str] = None) -> Optional[BaseSummarizer]:
-    """Look up a backend by name. For Ollama, if ``model`` is given, return a
-    fresh instance bound to that model rather than the registry singleton
-    (which auto-picks the first installed model)."""
+    """Look up a backend by name. If a ``model`` is supplied, return a fresh
+    instance bound to that model (Ollama / Codex support this) rather than
+    the registry singleton."""
     if name == "ollama" and model:
         return OllamaSummarizer(model=model)
+    if name == "codex" and model:
+        return CodexSummarizer(model=model)
     return _BY_NAME.get(name)
 
 

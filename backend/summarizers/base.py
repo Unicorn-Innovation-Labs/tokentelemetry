@@ -66,10 +66,15 @@ def run_cli(
     out = (proc.stdout or "").strip()
     if proc.returncode != 0 and not out:
         # Some CLIs (codex, claude) echo the entire prompt back to stderr as
-        # part of their banner; truncating at 500 chars used to hide the real
-        # error past the echoed prompt. 2000 leaves room for the actual cause
-        # while still keeping the API response sane.
-        err = (proc.stderr or "").strip()[:2000]
+        # part of their banner before failing. The actual cause is always at
+        # the END of stderr, not the start — so prefer ERROR/error lines if
+        # present, else tail the last 2000 chars.
+        stderr = (proc.stderr or "").strip()
+        err_lines = [ln for ln in stderr.splitlines() if "ERROR" in ln]
+        if err_lines:
+            err = "\n".join(err_lines[-5:])[:2000]
+        else:
+            err = stderr[-2000:] if len(stderr) > 2000 else stderr
         raise SummarizerError(f"{cmd[0]} exited {proc.returncode}: {err}")
     if not out:
         raise SummarizerError(f"{cmd[0]} produced no output")

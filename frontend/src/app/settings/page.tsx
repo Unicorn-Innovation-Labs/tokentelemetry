@@ -47,8 +47,9 @@ export default function SettingsPage() {
       const next = await putSummarizerConfig({
         enabled: selected !== null,
         backend: selected,
-        // Model field is only relevant for ollama right now; null otherwise.
-        model: selected === "ollama" ? model : null,
+        // Model field is meaningful for backends that support per-backend
+        // model selection (currently ollama + codex); null otherwise.
+        model: (selected === "ollama" || selected === "codex") ? model : null,
       });
       setConfig(next);
       setSelected(next.enabled ? next.backend : null);
@@ -64,7 +65,7 @@ export default function SettingsPage() {
 
   const dirty = config
     ? (selected !== (config.enabled ? config.backend : null))
-        || (selected === "ollama" && model !== config.model)
+        || ((selected === "ollama" || selected === "codex") && model !== config.model)
     : false;
 
   return (
@@ -103,7 +104,13 @@ export default function SettingsPage() {
               <BackendPicker
                 backends={backends}
                 selected={selected}
-                onSelect={(name) => { setSelected(name); if (name !== "ollama") setModel(null); }}
+                onSelect={(name) => {
+                  setSelected(name);
+                  // Drop the model when switching to a backend that doesn't
+                  // use one — keeps the dirty-check honest and avoids saving
+                  // an irrelevant model name into config.
+                  if (name !== "ollama" && name !== "codex") setModel(null);
+                }}
                 model={model}
                 onModelChange={setModel}
               />
