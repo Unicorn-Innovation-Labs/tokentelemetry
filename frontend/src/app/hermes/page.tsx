@@ -5,7 +5,7 @@ import { format, formatDistanceToNow } from "date-fns";
 import { useMemo } from "react";
 import {
   Activity, DollarSign, Cpu, Power, AlertTriangle, Clock, CheckCircle2,
-  BookOpen, Brain, ArrowRight,
+  BookOpen, Brain, ArrowRight, Sparkles, Users, Wrench, Signal, Timer
 } from "lucide-react";
 import { useResource } from "@/lib/api";
 import {
@@ -168,7 +168,7 @@ export default function HermesPage() {
       </div>
 
       {/* Sub-page navigation tiles */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
         <Link
           href="/hermes/skills"
           className="group flex items-center gap-3 bg-[var(--tt-panel)] border border-[var(--tt-border)] rounded-[var(--tt-radius-lg)] p-4 hover:border-[var(--tt-border-strong)] hover:bg-[var(--tt-sunken)] transition-colors"
@@ -183,15 +183,80 @@ export default function HermesPage() {
           <ArrowRight size={14} className="text-[var(--tt-fg-dim)] group-hover:text-[var(--tt-fg)] transition-colors" />
         </Link>
         <Link
+          href="/hermes/tools"
+          className="group flex items-center gap-3 bg-[var(--tt-panel)] border border-[var(--tt-border)] rounded-[var(--tt-radius-lg)] p-4 hover:border-[var(--tt-border-strong)] hover:bg-[var(--tt-sunken)] transition-colors"
+        >
+          <div className="h-9 w-9 grid place-items-center rounded-md bg-orange-500/10 text-orange-500">
+            <Wrench size={16} />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="text-[13px] font-semibold text-[var(--tt-fg)]">Tools</div>
+            <div className="text-[11px] text-[var(--tt-fg-muted)]">Core enabled CLI toolsets</div>
+          </div>
+          <ArrowRight size={14} className="text-[var(--tt-fg-dim)] group-hover:text-[var(--tt-fg)] transition-colors" />
+        </Link>
+        <Link
+          href="/hermes/profiles"
+          className="group flex items-center gap-3 bg-[var(--tt-panel)] border border-[var(--tt-border)] rounded-[var(--tt-radius-lg)] p-4 hover:border-[var(--tt-border-strong)] hover:bg-[var(--tt-sunken)] transition-colors"
+        >
+          <div className="h-9 w-9 grid place-items-center rounded-md bg-blue-500/10 text-blue-500">
+            <Users size={16} />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="text-[13px] font-semibold text-[var(--tt-fg)]">Profiles</div>
+            <div className="text-[11px] text-[var(--tt-fg-muted)]">Local agent profiles (Agents)</div>
+          </div>
+          <ArrowRight size={14} className="text-[var(--tt-fg-dim)] group-hover:text-[var(--tt-fg)] transition-colors" />
+        </Link>
+        <Link
+          href="/hermes/soul"
+          className="group flex items-center gap-3 bg-[var(--tt-panel)] border border-[var(--tt-border)] rounded-[var(--tt-radius-lg)] p-4 hover:border-[var(--tt-border-strong)] hover:bg-[var(--tt-sunken)] transition-colors"
+        >
+          <div className="h-9 w-9 grid place-items-center rounded-md bg-fuchsia-500/10 text-fuchsia-500">
+            <Sparkles size={16} />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="text-[13px] font-semibold text-[var(--tt-fg)]">Soul</div>
+            <div className="text-[11px] text-[var(--tt-fg-muted)]">Core persona (SOUL.md)</div>
+          </div>
+          <ArrowRight size={14} className="text-[var(--tt-fg-dim)] group-hover:text-[var(--tt-fg)] transition-colors" />
+        </Link>
+        <Link
           href="/hermes/memory"
           className="group flex items-center gap-3 bg-[var(--tt-panel)] border border-[var(--tt-border)] rounded-[var(--tt-radius-lg)] p-4 hover:border-[var(--tt-border-strong)] hover:bg-[var(--tt-sunken)] transition-colors"
         >
-          <div className="h-9 w-9 grid place-items-center rounded-md bg-cyan-500/10 text-cyan-300">
+          <div className="h-9 w-9 grid place-items-center rounded-md bg-cyan-500/10 text-cyan-500">
             <Brain size={16} />
           </div>
           <div className="flex-1 min-w-0">
             <div className="text-[13px] font-semibold text-[var(--tt-fg)]">Memory</div>
-            <div className="text-[11px] text-[var(--tt-fg-muted)]">Agent facts (MEMORY.md) and user profile (USER.md)</div>
+            <div className="text-[11px] text-[var(--tt-fg-muted)]">Agent facts (MEMORY.md)</div>
+          </div>
+          <ArrowRight size={14} className="text-[var(--tt-fg-dim)] group-hover:text-[var(--tt-fg)] transition-colors" />
+        </Link>
+        <Link
+          href="/hermes/gateway"
+          className="group flex items-center gap-3 bg-[var(--tt-panel)] border border-[var(--tt-border)] rounded-[var(--tt-radius-lg)] p-4 hover:border-[var(--tt-border-strong)] hover:bg-[var(--tt-sunken)] transition-colors"
+        >
+          <div className="h-9 w-9 grid place-items-center rounded-md bg-emerald-500/10 text-emerald-500">
+            <Signal size={16} />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="text-[13px] font-semibold text-[var(--tt-fg)]">Gateway</div>
+            <div className="text-[11px] text-[var(--tt-fg-muted)]">Live platform connections</div>
+          </div>
+          <ArrowRight size={14} className="text-[var(--tt-fg-dim)] group-hover:text-[var(--tt-fg)] transition-colors" />
+        </Link>
+        <Link
+          href="/hermes/schedules"
+          className="group flex items-center gap-3 bg-[var(--tt-panel)] border border-[var(--tt-border)] rounded-[var(--tt-radius-lg)] p-4 hover:border-[var(--tt-border-strong)] hover:bg-[var(--tt-sunken)] transition-colors"
+        >
+          <div className="h-9 w-9 grid place-items-center rounded-md bg-indigo-500/10 text-indigo-500">
+            <Timer size={16} />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="text-[13px] font-semibold text-[var(--tt-fg)]">Schedules</div>
+            <div className="text-[11px] text-[var(--tt-fg-muted)]">Background cron jobs</div>
           </div>
           <ArrowRight size={14} className="text-[var(--tt-fg-dim)] group-hover:text-[var(--tt-fg)] transition-colors" />
         </Link>

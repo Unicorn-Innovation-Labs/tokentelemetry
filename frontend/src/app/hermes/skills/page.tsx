@@ -47,11 +47,8 @@ export default function HermesSkillsPage() {
   return (
     <div className="px-8 py-8 max-w-[1600px] mx-auto space-y-8 pb-20">
       <PageHeader
-        eyebrow={
-          <Link href="/hermes" className="inline-flex items-center gap-1.5 text-[var(--tt-fg-muted)] hover:text-[var(--tt-fg)]">
-            <ArrowLeft size={11} /> Hermes Agent
-          </Link>
-        }
+        backHref="/hermes"
+        eyebrow="Hermes Agent"
         icon={<BookOpen size={20} />}
         title="Skills"
         description="Loaded skills from ~/.hermes/skills/ — read from the prompt snapshot Hermes itself uses."

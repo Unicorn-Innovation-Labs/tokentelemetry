@@ -1,7 +1,10 @@
 import * as React from "react";
+import Link from "next/link";
+import { ArrowLeft } from "lucide-react";
 import { cn } from "@/lib/cn";
 
 export interface PageHeaderProps {
+  backHref?: string;
   eyebrow?: React.ReactNode;
   title: React.ReactNode;
   description?: React.ReactNode;
@@ -10,10 +13,20 @@ export interface PageHeaderProps {
   className?: string;
 }
 
-export function PageHeader({ eyebrow, title, description, icon, actions, className }: PageHeaderProps) {
+export function PageHeader({ backHref, eyebrow, title, description, icon, actions, className }: PageHeaderProps) {
   return (
     <header className={cn("flex flex-wrap items-end justify-between gap-6 pb-6 border-b border-[var(--tt-border)]", className)}>
       <div className="flex items-start gap-4 min-w-0">
+        {backHref && (
+          <Link
+            href={backHref}
+            title="Back"
+            aria-label="Back"
+            className="mt-1 h-9 w-9 grid place-items-center rounded-[var(--tt-radius)] border border-[var(--tt-border)] text-[var(--tt-fg-muted)] hover:text-[var(--tt-fg)] hover:tt-tint-1 transition-colors shrink-0"
+          >
+            <ArrowLeft size={16} />
+          </Link>
+        )}
         {icon && (
           <div className="mt-1 flex h-10 w-10 items-center justify-center rounded-[var(--tt-radius)] tt-tint-2 border border-[var(--tt-border)] text-[var(--tt-brand)]">
             {icon}
