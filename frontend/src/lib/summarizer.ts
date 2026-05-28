@@ -50,6 +50,14 @@ export interface Summary {
   stale: boolean;
 }
 
+export interface SummaryErrorInfo {
+  category: "auth" | "quota" | "model" | "timeout" | "network" | "no_output" | "unknown";
+  title: string;
+  message: string;
+  hint: string | null;
+  raw: string;
+}
+
 export interface RecentTally {
   requested: number;
   summarized: number;
@@ -91,7 +99,7 @@ export const getCachedSummary = (sessionId: string) =>
   api<{ summary: Summary | null }>(`/sessions/${sessionId}/summary`).then((r) => r.summary);
 
 export const generateSummary = (sessionId: string, agent: string, force = false) =>
-  api<{ summary: Summary; error: string | null }>(
+  api<{ summary: Summary; error: string | null; error_info?: SummaryErrorInfo | null }>(
     `/sessions/${sessionId}/summary?agent=${encodeURIComponent(agent)}&force=${force}`,
     { method: "POST" },
   );

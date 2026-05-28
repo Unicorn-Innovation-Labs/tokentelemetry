@@ -3031,7 +3031,11 @@ async def make_summary(session_id: str, agent: str, force: bool = False):
         backend_name or "", cfg.get("model"),
         brief, narrative or {}, 0.0,
     )
-    return {"summary": {**result, "stale": False}, "error": gen_error}
+    error_info = None
+    if gen_error:
+        from summarizers.errors import classify as _classify_err
+        error_info = _classify_err(gen_error, backend_name=backend_name or "")
+    return {"summary": {**result, "stale": False}, "error": gen_error, "error_info": error_info}
 
 @app.post("/summaries/recent")
 async def summarize_recent(limit: int = 20):

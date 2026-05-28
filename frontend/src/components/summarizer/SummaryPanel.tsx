@@ -5,13 +5,14 @@ import Link from "next/link";
 import {
   Sparkles, Target, ListChecks, Gauge, Star, Wrench, FileCode, Terminal,
   AlertTriangle, RefreshCw, Loader2, Coins, Settings2, Info,
+  KeyRound, Clock, ServerOff, Ban, AlertOctagon, AlertCircle,
 } from "lucide-react";
 import { Badge, Button } from "@/components/ui";
 import { cn } from "@/lib/cn";
 import { formatTokens, formatCost } from "@/lib/format";
 import {
   getCachedSummary, generateSummary, getSummarizerConfig,
-  type Summary, type SummarizerConfig,
+  type Summary, type SummarizerConfig, type SummaryErrorInfo,
 } from "@/lib/summarizer";
 
 interface SummaryPanelProps {
@@ -31,6 +32,7 @@ export default function SummaryPanel({ sessionId, agent }: SummaryPanelProps) {
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [errorInfo, setErrorInfo] = useState<SummaryErrorInfo | null>(null);
   const [collapsed, setCollapsed] = useState(false);
 
   useEffect(() => {
@@ -51,10 +53,12 @@ export default function SummaryPanel({ sessionId, agent }: SummaryPanelProps) {
   const runGenerate = async (force: boolean) => {
     setGenerating(true);
     setError(null);
+    setErrorInfo(null);
     try {
       const res = await generateSummary(sessionId, agent, force);
       setSummary(res.summary);
       if (res.error) setError(res.error);
+      if (res.error_info) setErrorInfo(res.error_info);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to generate summary.");
     } finally {
@@ -123,12 +127,14 @@ export default function SummaryPanel({ sessionId, agent }: SummaryPanelProps) {
             </div>
           )}
 
-          {error && (
+          {errorInfo ? (
+            <SummaryErrorCard info={errorInfo} />
+          ) : error ? (
             <div className="flex items-start gap-2 rounded-[var(--tt-radius)] border border-[var(--tt-danger-bd)] bg-[var(--tt-danger-bg)] px-3 py-2.5">
               <AlertTriangle size={14} className="mt-0.5 shrink-0 text-[var(--tt-danger-fg)]" />
               <p className="text-[12px] text-[var(--tt-danger-fg)]">{error}</p>
             </div>
-          )}
+          ) : null}
 
           {/* No summary yet */}
           {!summary && !generating && (
@@ -302,6 +308,84 @@ function BriefSection({ icon, title, children }: { icon: React.ReactNode; title:
       </summary>
       {children}
     </details>
+  );
+}
+
+const ERROR_ICONS: Record<SummaryErrorInfo["category"], React.ComponentType<{ size?: number; className?: string }>> = {
+  auth: KeyRound,
+  timeout: Clock,
+  network: ServerOff,
+  quota: Ban,
+  model: AlertOctagon,
+  no_output: AlertCircle,
+  unknown: AlertCircle,
+};
+
+/**
+ * Render a hint string with `inline code` segments rendered as <code>.
+ * Splits on backticked spans — pairs of backticks become monospace.
+ */
+function renderHint(hint: string): React.ReactNode {
+  const parts = hint.split(/(`[^`]+`)/g);
+  return parts.map((part, i) => {
+    if (part.startsWith("`") && part.endsWith("`") && part.length > 1) {
+      return (
+        <code
+          key={i}
+          className="font-mono text-[11px] px-1 py-[1px] rounded bg-[var(--tt-panel)] border border-[var(--tt-border)] text-[var(--tt-fg)]"
+        >
+          {part.slice(1, -1)}
+        </code>
+      );
+    }
+    return <span key={i}>{part}</span>;
+  });
+}
+
+function SummaryErrorCard({ info }: { info: SummaryErrorInfo }) {
+  const Icon = ERROR_ICONS[info.category] ?? AlertCircle;
+  return (
+    <div className="rounded-[var(--tt-radius)] border border-[var(--tt-danger-bd)] bg-[var(--tt-danger-bg)] p-3.5 space-y-2.5">
+      <div className="flex items-start gap-2.5">
+        <span className="h-7 w-7 grid place-items-center rounded-md bg-[var(--tt-danger-bg)] border border-[var(--tt-danger-bd)] text-[var(--tt-danger-fg)] shrink-0">
+          <Icon size={14} />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="text-[13px] font-semibold text-[var(--tt-danger-fg)] leading-tight">
+            {info.title}
+          </div>
+          <p className="text-[12px] mt-0.5 leading-relaxed text-[var(--tt-fg)]">
+            {info.message}
+          </p>
+        </div>
+      </div>
+
+      {info.hint && (
+        <div className="rounded-[var(--tt-radius)] bg-[var(--tt-sunken)] border border-[var(--tt-border)] px-2.5 py-2 text-[12px] leading-relaxed text-[var(--tt-fg-muted)]">
+          {renderHint(info.hint)}
+        </div>
+      )}
+
+      {info.category === "auth" && (
+        <Link
+          href="/settings"
+          className="inline-flex items-center gap-1.5 text-[12px] font-medium text-[var(--tt-brand)] hover:underline"
+        >
+          <Settings2 size={12} /> Settings →
+        </Link>
+      )}
+
+      {info.raw && (
+        <details className="group">
+          <summary className="cursor-pointer text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--tt-fg-dim)] hover:text-[var(--tt-fg)] list-none select-none">
+            Show raw error
+          </summary>
+          <pre className="mt-2 font-mono text-[10px] text-[var(--tt-fg-muted)] bg-[var(--tt-sunken)] border border-[var(--tt-border)] rounded px-2 py-1.5 whitespace-pre-wrap break-all max-h-48 overflow-y-auto">
+            {info.raw}
+          </pre>
+        </details>
+      )}
+    </div>
   );
 }
 
