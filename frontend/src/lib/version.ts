@@ -1,0 +1,32 @@
+"use client";
+
+import { api } from "./api";
+
+/** One curated bullet inside a release. */
+export interface UpdateHighlight {
+  title: string;
+  description: string | null;
+  /** Internal route (`/settings`) or external URL. */
+  href: string | null;
+}
+
+/** A single release entry — `tag`/`title` are optional for legacy data. */
+export interface UpdateRelease {
+  tag: string | null;
+  title: string | null;
+  highlights: UpdateHighlight[];
+}
+
+/** Response shape from `GET /version`. */
+export interface VersionInfo {
+  current: string | null;
+  latest: string | null;
+  behind: boolean;
+  /** Newest first. Empty when UPDATE.json is missing / unreachable. */
+  releases: UpdateRelease[];
+  release_url: string;
+  source: "github" | "cache" | "offline" | "disabled" | "none";
+  repo: string;
+}
+
+export const getVersion = () => api<VersionInfo>("/version");

@@ -862,6 +862,174 @@ async def hermes_overview():
     }
 
 
+# --------------------------------------------------------------------------- #
+# Update checker — compares local git HEAD to remote main, pulls curated
+# highlights from UPDATE.json at the repo root. The "What's new" banner in
+# the dashboard renders only when behind=true.
+# --------------------------------------------------------------------------- #
+import subprocess as _subprocess
+import time as _upd_time
+import urllib.request as _urlreq
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_TT_HOME = HOME / ".tokentelemetry"
+_UPDATE_CACHE = _TT_HOME / ".update-check.json"
+_REPO_OWNER = "VasiHemanth"
+_REPO_NAME = "tokentelemetry"
+_UPDATE_CACHE_TTL = 60 * 60       # 1 hour — quick enough that hotfixes
+                                  # propagate same-day, infrequent enough to
+                                  # not hammer GitHub on dashboard reloads.
+_UPDATE_FETCH_TIMEOUT = 5         # seconds
+
+
+def _local_commit() -> Optional[str]:
+    """Current local commit. None if not a git checkout (zipball install)."""
+    try:
+        proc = _subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(_REPO_ROOT), capture_output=True, text=True, timeout=3,
+        )
+        if proc.returncode == 0:
+            return proc.stdout.strip() or None
+    except Exception:
+        pass
+    return None
+
+
+def _read_cache() -> Optional[Dict[str, Any]]:
+    if not _UPDATE_CACHE.exists():
+        return None
+    try:
+        with open(_UPDATE_CACHE, "r", encoding="utf-8") as f:
+            cached = json.load(f)
+        if not isinstance(cached, dict):
+            return None
+        age = _upd_time.time() - float(cached.get("fetched_at", 0))
+        if age > _UPDATE_CACHE_TTL:
+            return None
+        return cached
+    except Exception:
+        return None
+
+
+def _write_cache(payload: Dict[str, Any]) -> None:
+    try:
+        _TT_HOME.mkdir(parents=True, exist_ok=True)
+        payload = {**payload, "fetched_at": _upd_time.time()}
+        with open(_UPDATE_CACHE, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+    except Exception:
+        pass
+
+
+def _fetch_remote() -> Optional[Dict[str, Any]]:
+    """Hit GitHub for (a) latest commit on main, (b) curated UPDATE.json.
+    Returns None on any network error — caller falls back to cache."""
+    sha_url = f"https://api.github.com/repos/{_REPO_OWNER}/{_REPO_NAME}/commits/main"
+    update_url = f"https://raw.githubusercontent.com/{_REPO_OWNER}/{_REPO_NAME}/main/UPDATE.json"
+    try:
+        req = _urlreq.Request(sha_url, headers={"User-Agent": "tokentelemetry-update-check"})
+        with _urlreq.urlopen(req, timeout=_UPDATE_FETCH_TIMEOUT) as r:
+            sha_data = json.loads(r.read().decode("utf-8"))
+        latest_sha = sha_data.get("sha")
+        if not latest_sha:
+            return None
+    except Exception:
+        return None
+
+    # Two supported shapes:
+    #   - new style: {"releases": [{tag, title, highlights:[...]}, ...]}
+    #   - legacy:    {"highlights": [...]} (one flat list — auto-wrapped into
+    #                  a single synthetic release)
+    # Inside `highlights`, items can be strings or {title, description, href}.
+    # Normalize everything to a `releases` array so the frontend has one shape.
+    releases: List[Dict[str, Any]] = []
+    release_url = f"https://github.com/{_REPO_OWNER}/{_REPO_NAME}/commits/main"
+
+    def _norm_hl(items) -> List[Dict[str, Any]]:
+        out: List[Dict[str, Any]] = []
+        for h in (items or [])[:5]:  # cap per release so noisy ones stay readable
+            if isinstance(h, str) and h.strip():
+                out.append({"title": h.strip(), "description": None, "href": None})
+            elif isinstance(h, dict) and h.get("title"):
+                out.append({
+                    "title": str(h["title"]).strip(),
+                    "description": (str(h["description"]).strip() if h.get("description") else None),
+                    "href": (str(h["href"]).strip() if h.get("href") else None),
+                })
+        return out
+
+    try:
+        req2 = _urlreq.Request(update_url, headers={"User-Agent": "tokentelemetry-update-check"})
+        with _urlreq.urlopen(req2, timeout=_UPDATE_FETCH_TIMEOUT) as r:
+            upd = json.loads(r.read().decode("utf-8"))
+
+        if isinstance(upd.get("releases"), list):
+            for r in upd["releases"][:6]:  # show up to 6 prior releases
+                if not isinstance(r, dict):
+                    continue
+                hls = _norm_hl(r.get("highlights"))
+                if not hls and not r.get("title"):
+                    continue
+                releases.append({
+                    "tag": (str(r["tag"]).strip() if r.get("tag") else None),
+                    "title": (str(r["title"]).strip() if r.get("title") else None),
+                    "highlights": hls,
+                })
+        elif upd.get("highlights"):
+            # Legacy flat shape — wrap into one synthetic release.
+            releases.append({"tag": None, "title": None, "highlights": _norm_hl(upd["highlights"])})
+
+        release_url = upd.get("release_url") or release_url
+    except Exception:
+        # UPDATE.json missing or malformed: still report the commit diff.
+        pass
+
+    return {"latest": latest_sha, "releases": releases, "release_url": release_url}
+
+
+@app.get("/version")
+async def get_version():
+    """Banner data: how far behind the local checkout is + 1-3 curated bullets
+    about what's in the update. Set TT_NO_UPDATE_CHECK=1 to disable."""
+    current = _local_commit()
+    base: Dict[str, Any] = {
+        "current": current,
+        "latest": None,
+        "behind": False,
+        "releases": [],
+        "release_url": f"https://github.com/{_REPO_OWNER}/{_REPO_NAME}",
+        "source": "none",
+        "repo": f"{_REPO_OWNER}/{_REPO_NAME}",
+    }
+    if os.environ.get("TT_NO_UPDATE_CHECK"):
+        base["source"] = "disabled"
+        return base
+    if not current:
+        # Not a git checkout — nothing to compare against.
+        return base
+
+    cached = _read_cache()
+    remote = cached if cached else _fetch_remote()
+    if remote is None:
+        base["source"] = "offline"
+        return base
+    if not cached:
+        _write_cache(remote)
+
+    latest = remote.get("latest")
+    base["latest"] = latest
+    # Tolerate both old-cache (highlights) and new-cache (releases) entries.
+    if remote.get("releases"):
+        base["releases"] = remote["releases"]
+    elif remote.get("highlights"):
+        base["releases"] = [{"tag": None, "title": None, "highlights": remote["highlights"]}]
+    base["release_url"] = remote.get("release_url") or base["release_url"]
+    base["behind"] = bool(latest) and latest != current
+    base["source"] = "cache" if cached else "github"
+    return base
+
+
 @app.get("/")
 async def root():
     return {"message": "TokenTelemetry API is running"}

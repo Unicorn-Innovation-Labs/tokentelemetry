@@ -1,0 +1,31 @@
+{
+  "releases": [
+    {
+      "tag": "2026-05-28",
+      "title": "Summarizer + ports + update banner",
+      "highlights": [
+        {
+          "title": "Summarizer settings",
+          "description": "Pick a backend (Ollama / Codex / Claude / Gemini / Qwen / Antigravity) and choose a specific model for it. Avoids 'incorrect API key' errors when your account doesn't have GPT-5, or 'timed out' when Ollama's default model is too big for your hardware.",
+          "href": "/settings"
+        },
+        {
+          "title": "Configurable ports",
+          "description": "start.sh now accepts --port (frontend) and --api-port (backend), e.g. start.sh --port 4000 --api-port 9000. The frontend is told the backend's location automatically via NEXT_PUBLIC_API_BASE, so fetches always reach the right place."
+        }
+      ]
+    },
+    {
+      "tag": "2026-05-25",
+      "title": "Hermes sub-pages",
+      "highlights": [
+        {
+          "title": "Hermes Agent dashboard",
+          "description": "New sub-pages for Gateway, Memory, Profiles, Schedules, Skills, Soul, and Tools — all read directly from your local ~/.hermes state.",
+          "href": "/hermes"
+        }
+      ]
+    }
+  ],
+  "release_url": "https://github.com/VasiHemanth/tokentelemetry/commits/main"
+}
