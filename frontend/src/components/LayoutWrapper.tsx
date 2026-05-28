@@ -2,6 +2,7 @@
 
 import Navigation from "./Navigation";
 import FeedbackFloatingButton from "./feedback/FeedbackFloatingButton";
+import WhatsNewBanner from "./WhatsNewBanner";
 import { useEffect, useState } from "react";
 
 export default function LayoutWrapper({ children }: { children: React.ReactNode }) {
@@ -32,7 +33,10 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
         {/* Ambient canvas — single source of background atmosphere */}
         <div aria-hidden className="pointer-events-none absolute inset-0 tt-canvas-glow" />
         <div aria-hidden className="pointer-events-none absolute inset-0 tt-grid opacity-40" />
-        <div className="relative z-10">{children}</div>
+        <div className="relative z-10">
+          <WhatsNewBanner />
+          {children}
+        </div>
       </main>
       <FeedbackFloatingButton />
     </body>

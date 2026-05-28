@@ -213,7 +213,7 @@ export default function AnalyticsPage() {
                   contentStyle={ct.tooltipStyle}
                   itemStyle={ct.tooltipItem}
                   labelStyle={ct.tooltipLabel}
-                  formatter={(v: number) => [v.toLocaleString(), "Tokens"]}
+                  formatter={(v: any) => [Number(v).toLocaleString(), "Tokens"]}
                   cursor={{ stroke: ct.axisStroke }}
                 />
                 <Area type="monotone" dataKey="total" stroke="#60a5fa" strokeWidth={2} fill="url(#ttArea)" />
@@ -237,7 +237,7 @@ export default function AnalyticsPage() {
                   <Tooltip
                     contentStyle={ct.tooltipStyle}
                     itemStyle={ct.tooltipItem}
-                    formatter={(v: number, _n, p) => [v.toLocaleString(), p.payload.name]}
+                    formatter={(v: any, _n, p: any) => [Number(v).toLocaleString(), p.payload.name]}
                   />
                 </RePieChart>
               </ResponsiveContainer>
@@ -323,7 +323,7 @@ export default function AnalyticsPage() {
                       contentStyle={ct.tooltipStyle}
                       itemStyle={ct.tooltipItem}
                       cursor={{ fill: ct.grid }}
-                      formatter={(v: number) => [v.toLocaleString(), "Tokens"]}
+                      formatter={(v: any) => [v.toLocaleString(), "Tokens"]}
                     />
                     <Bar dataKey="total" radius={[0, 6, 6, 0]} barSize={16}>
                       {modelData.map((m) => <Cell key={m.name} fill={m.color} />)}
@@ -347,7 +347,7 @@ export default function AnalyticsPage() {
                     <Tooltip
                       contentStyle={ct.tooltipStyle}
                       itemStyle={ct.tooltipItem}
-                      formatter={(v: number, _n, p) => [v.toLocaleString(), p.payload.name]}
+                      formatter={(v: any, _n, p: any) => [v.toLocaleString(), p.payload.name]}
                     />
                   </RePieChart>
                 </ResponsiveContainer>

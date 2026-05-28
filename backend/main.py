@@ -65,17 +65,14 @@ def _pid_alive(pid: int) -> bool:
 
 app = FastAPI(title="TokenTelemetry API")
 
-# Enable CORS for Next.js frontend
+# Enable CORS for the Next.js frontend.
+#
+# We use a regex over an explicit allowlist so the frontend can pick any local
+# port (the user can pass --port to start.sh / bin/cli.js). Origins are still
+# locked to loopback — only localhost/127.0.0.1 on any port are accepted.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://localhost:3001",
-        "http://127.0.0.1:3001",
-        "http://localhost:3002",
-        "http://127.0.0.1:3002",
-    ],
+    allow_origin_regex=r"^http://(localhost|127\.0\.0\.1):\d+$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -433,6 +430,50 @@ async def hermes_memory():
     }
 
 
+@app.get("/hermes/soul")
+async def hermes_soul():
+    """Read the SOUL.md file."""
+    soul_path = HERMES_DIR / "SOUL.md"
+    if not soul_path.exists():
+        return {"content": "No SOUL.md found.", "exists": False}
+    try:
+        content = soul_path.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        content = "Error reading SOUL.md"
+    return {"content": content, "exists": True}
+
+
+@app.get("/hermes/profiles")
+async def hermes_profiles():
+    """List available profiles."""
+    if not HERMES_PROFILES_DIR.exists():
+        return {"profiles": []}
+    profiles = []
+    for p in HERMES_PROFILES_DIR.iterdir():
+        if p.is_dir():
+            profiles.append({"name": p.name})
+    return {"profiles": profiles}
+
+
+@app.get("/hermes/tools")
+async def hermes_tools():
+    """List toolsets configured in config.yaml."""
+    config_path = HERMES_DIR / "config.yaml"
+    enabled_tools = []
+    if config_path.exists():
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                content = f.read()
+                import re
+                match = re.search(r'platform_toolsets\s*:.*?\n\s+cli\s*:.*?\n((?:\s+-\s+\w+\s*\n)+)', content, re.DOTALL)
+                if match:
+                    tools_block = match.group(1)
+                    enabled_tools = re.findall(r'-\s+(\w+)', tools_block)
+        except Exception:
+            pass
+    return {"enabled_tools": enabled_tools}
+
+
 @app.get("/sessions/{session_id}/hermes-overlay")
 async def hermes_session_overlay(session_id: str):
     """Per-session overlay derived from agent.log + memory tool calls."""
@@ -538,6 +579,10 @@ def _hermes_cron_jobs() -> List[Dict[str, Any]]:
             data = json.load(f)
     except Exception:
         return []
+    # Hermes writes {"jobs": [...], "updated_at": "..."} now; tolerate the
+    # legacy top-level list shape too so this keeps working across versions.
+    if isinstance(data, dict):
+        data = data.get("jobs") or []
     if not isinstance(data, list):
         return []
     out: List[Dict[str, Any]] = []
@@ -558,10 +603,32 @@ def _hermes_cron_jobs() -> List[Dict[str, Any]]:
         kind = (sched.get("kind") or "").lower()
         grace_s = {"daily": 7200, "hourly": 1800}.get(kind, 300)
         at_risk = bool(nxt_dt and (now - nxt_dt).total_seconds() > grace_s)
+        # `deliver` is sometimes a string, sometimes a list — normalize to list
+        # so the UI doesn't have to special-case it.
+        deliver_raw = j.get("deliver")
+        if isinstance(deliver_raw, list):
+            deliver = [str(x) for x in deliver_raw if x]
+        elif deliver_raw:
+            deliver = [str(deliver_raw)]
+        else:
+            deliver = ["local"]
+        enabled = j.get("enabled") is not False
+        state = j.get("state") or ("paused" if not enabled else "active")
         out.append({
             "id": j.get("id"),
-            "name": j.get("name"),
+            "name": j.get("name") or "(unnamed)",
             "schedule": sched,
+            # `schedule_display` is the human-readable form Hermes itself uses
+            # in `hermes cron list`; fall back to common keys if absent.
+            "schedule_display": j.get("schedule_display")
+                or sched.get("value") or sched.get("expr") or sched.get("kind") or "?",
+            "prompt": j.get("prompt") or "",
+            "deliver": deliver,
+            "skills": j.get("skills") or ([j["skill"]] if j.get("skill") else []),
+            "script": j.get("script") or None,
+            "repeat": j.get("repeat") or None,
+            "state": state,
+            "enabled": enabled,
             "last_run_at": j.get("last_run_at"),
             "next_run_at": j.get("next_run_at"),
             "last_status": j.get("last_status"),
@@ -569,6 +636,218 @@ def _hermes_cron_jobs() -> List[Dict[str, Any]]:
             "at_risk": at_risk,
         })
     return out
+
+
+# --------------------------------------------------------------------------- #
+# Hermes CLI mutations — DISABLED for now
+#
+# The full create/edit/pause/resume/run/remove + scripts surface was wired up
+# (see git history on this branch) but is intentionally commented out below
+# while the schedules page ships read-only. Re-enable by removing the
+# `""" disabled""" ... """end-disabled"""` triple-quote markers and
+# uncommenting the `import shutil` / `import subprocess` lines.
+# --------------------------------------------------------------------------- #
+# import shutil
+# import subprocess
+
+
+# DISABLED-MUTATIONS: def _find_hermes_cli() -> Optional[str]:
+# DISABLED-MUTATIONS:     """Locate the `hermes` binary. PATH first, then a couple of known install spots."""
+# DISABLED-MUTATIONS:     found = shutil.which("hermes")
+# DISABLED-MUTATIONS:     if found:
+# DISABLED-MUTATIONS:         return found
+# DISABLED-MUTATIONS:     for candidate in (HOME / ".local" / "bin" / "hermes", HOME / ".hermes" / "bin" / "hermes"):
+# DISABLED-MUTATIONS:         if candidate.exists():
+# DISABLED-MUTATIONS:             return str(candidate)
+# DISABLED-MUTATIONS:     return None
+
+
+# DISABLED-MUTATIONS: def _run_hermes_cron(args: List[str]) -> Dict[str, Any]:
+# DISABLED-MUTATIONS:     """Invoke `hermes cron <args>`. Returns {ok, output, error}."""
+# DISABLED-MUTATIONS:     cli = _find_hermes_cli()
+# DISABLED-MUTATIONS:     if not cli:
+# DISABLED-MUTATIONS:         return {"ok": False, "output": "", "error": "hermes CLI not found in PATH"}
+# DISABLED-MUTATIONS:     try:
+# DISABLED-MUTATIONS:         # 15s timeout matches the desktop. `tick` can be long-running but we
+# DISABLED-MUTATIONS:         # don't expose it here.
+# DISABLED-MUTATIONS:         proc = subprocess.run(
+# DISABLED-MUTATIONS:             [cli, "cron", *args],
+# DISABLED-MUTATIONS:             capture_output=True, text=True, timeout=15,
+# DISABLED-MUTATIONS:         )
+# DISABLED-MUTATIONS:     except subprocess.TimeoutExpired:
+# DISABLED-MUTATIONS:         return {"ok": False, "output": "", "error": "hermes cron timed out after 15s"}
+# DISABLED-MUTATIONS:     except Exception as e:
+# DISABLED-MUTATIONS:         return {"ok": False, "output": "", "error": str(e)}
+# DISABLED-MUTATIONS:     if proc.returncode != 0:
+# DISABLED-MUTATIONS:         return {"ok": False, "output": proc.stdout or "", "error": (proc.stderr or "").strip() or f"exit {proc.returncode}"}
+# DISABLED-MUTATIONS:     # `hermes cron` exits 0 even on validation/lookup failures and prints
+# DISABLED-MUTATIONS:     # "Failed to ..." to stdout. Treat that as the real error.
+# DISABLED-MUTATIONS:     out = (proc.stdout or "").strip()
+# DISABLED-MUTATIONS:     if out.startswith("Failed to"):
+# DISABLED-MUTATIONS:         return {"ok": False, "output": out, "error": out}
+# DISABLED-MUTATIONS:     return {"ok": True, "output": proc.stdout or "", "error": None}
+
+
+# DISABLED-MUTATIONS: class CreateCronJobBody(BaseModel):
+# DISABLED-MUTATIONS:     schedule: str  # "30m", "every 2h", "0 9 * * *", "daily 09:00", ...
+# DISABLED-MUTATIONS:     prompt: Optional[str] = None
+# DISABLED-MUTATIONS:     name: Optional[str] = None
+# DISABLED-MUTATIONS:     deliver: Optional[str] = None
+# DISABLED-MUTATIONS:     # Advanced — mirror the full `hermes cron create` surface.
+# DISABLED-MUTATIONS:     skills: Optional[List[str]] = None         # repeated --skill
+# DISABLED-MUTATIONS:     script: Optional[str] = None               # path relative to ~/.hermes/scripts/
+# DISABLED-MUTATIONS:     no_agent: Optional[bool] = None            # --no-agent (watchdog mode)
+# DISABLED-MUTATIONS:     repeat: Optional[int] = None               # --repeat N (None = forever)
+# DISABLED-MUTATIONS:     workdir: Optional[str] = None              # absolute project path
+
+
+# DISABLED-MUTATIONS: class EditCronJobBody(BaseModel):
+# DISABLED-MUTATIONS:     """Edit fields. Any field set will be passed through; the rest are left alone.
+
+# DISABLED-MUTATIONS:     Skills are *replaced* when `skills` is provided (mirrors `--skill` which
+# DISABLED-MUTATIONS:     replaces). For incremental add/remove, callers can do their own diff and
+# DISABLED-MUTATIONS:     invoke the dedicated endpoints later if needed.
+# DISABLED-MUTATIONS:     """
+# DISABLED-MUTATIONS:     schedule: Optional[str] = None
+# DISABLED-MUTATIONS:     prompt: Optional[str] = None
+# DISABLED-MUTATIONS:     name: Optional[str] = None
+# DISABLED-MUTATIONS:     deliver: Optional[str] = None
+# DISABLED-MUTATIONS:     skills: Optional[List[str]] = None
+# DISABLED-MUTATIONS:     clear_skills: Optional[bool] = None        # --clear-skills
+# DISABLED-MUTATIONS:     script: Optional[str] = None               # empty string clears
+# DISABLED-MUTATIONS:     no_agent: Optional[bool] = None            # explicit True/False toggles; None leaves alone
+# DISABLED-MUTATIONS:     repeat: Optional[int] = None
+# DISABLED-MUTATIONS:     workdir: Optional[str] = None              # empty string clears
+
+
+# DISABLED-MUTATIONS: def _common_create_edit_args(body, args: List[str]) -> None:
+# DISABLED-MUTATIONS:     """Append `--skill`, `--script`, `--no-agent`, `--repeat`, `--workdir`
+# DISABLED-MUTATIONS:     flags that are shared between create and edit. `body` is a pydantic model
+# DISABLED-MUTATIONS:     with those optional fields."""
+# DISABLED-MUTATIONS:     if body.skills:
+# DISABLED-MUTATIONS:         for s in body.skills:
+# DISABLED-MUTATIONS:             if s:
+# DISABLED-MUTATIONS:                 args += ["--skill", s]
+# DISABLED-MUTATIONS:     if body.script is not None:
+# DISABLED-MUTATIONS:         args += ["--script", body.script]
+# DISABLED-MUTATIONS:     if body.no_agent is True:
+# DISABLED-MUTATIONS:         args += ["--no-agent"]
+# DISABLED-MUTATIONS:     if body.repeat is not None:
+# DISABLED-MUTATIONS:         args += ["--repeat", str(body.repeat)]
+# DISABLED-MUTATIONS:     if body.workdir is not None:
+# DISABLED-MUTATIONS:         args += ["--workdir", body.workdir]
+
+
+# DISABLED-MUTATIONS: @app.post("/hermes/cron/jobs")
+# DISABLED-MUTATIONS: async def create_cron_job(body: CreateCronJobBody):
+# DISABLED-MUTATIONS:     from fastapi import HTTPException
+# DISABLED-MUTATIONS:     if not body.schedule or not body.schedule.strip():
+# DISABLED-MUTATIONS:         raise HTTPException(status_code=400, detail="schedule is required")
+# DISABLED-MUTATIONS:     # Order matters: `hermes cron create` expects positionals (schedule, prompt)
+# DISABLED-MUTATIONS:     # before flags. If a flag comes between them, the prompt bubbles up to the
+# DISABLED-MUTATIONS:     # top-level parser and errors out as "unrecognized arguments".
+# DISABLED-MUTATIONS:     args: List[str] = ["create", body.schedule]
+# DISABLED-MUTATIONS:     if body.prompt:
+# DISABLED-MUTATIONS:         args += [body.prompt]
+# DISABLED-MUTATIONS:     if body.name:
+# DISABLED-MUTATIONS:         args += ["--name", body.name]
+# DISABLED-MUTATIONS:     if body.deliver:
+# DISABLED-MUTATIONS:         args += ["--deliver", body.deliver]
+# DISABLED-MUTATIONS:     _common_create_edit_args(body, args)
+# DISABLED-MUTATIONS:     result = _run_hermes_cron(args)
+# DISABLED-MUTATIONS:     if not result["ok"]:
+# DISABLED-MUTATIONS:         raise HTTPException(status_code=502, detail=result["error"])
+# DISABLED-MUTATIONS:     return {"ok": True, "output": result["output"]}
+
+
+# DISABLED-MUTATIONS: @app.put("/hermes/cron/jobs/{job_id}")
+# DISABLED-MUTATIONS: async def edit_cron_job(job_id: str, body: EditCronJobBody):
+# DISABLED-MUTATIONS:     from fastapi import HTTPException
+# DISABLED-MUTATIONS:     if not job_id:
+# DISABLED-MUTATIONS:         raise HTTPException(status_code=400, detail="job id is required")
+# DISABLED-MUTATIONS:     args: List[str] = ["edit", job_id]
+# DISABLED-MUTATIONS:     if body.schedule is not None:
+# DISABLED-MUTATIONS:         args += ["--schedule", body.schedule]
+# DISABLED-MUTATIONS:     if body.prompt is not None:
+# DISABLED-MUTATIONS:         args += ["--prompt", body.prompt]
+# DISABLED-MUTATIONS:     if body.name is not None:
+# DISABLED-MUTATIONS:         args += ["--name", body.name]
+# DISABLED-MUTATIONS:     if body.deliver is not None:
+# DISABLED-MUTATIONS:         args += ["--deliver", body.deliver]
+# DISABLED-MUTATIONS:     if body.clear_skills:
+# DISABLED-MUTATIONS:         args += ["--clear-skills"]
+# DISABLED-MUTATIONS:     # --skill is "replace the set", which matches our edit-by-replace semantics.
+# DISABLED-MUTATIONS:     if body.skills is not None and not body.clear_skills:
+# DISABLED-MUTATIONS:         for s in body.skills:
+# DISABLED-MUTATIONS:             if s:
+# DISABLED-MUTATIONS:                 args += ["--skill", s]
+# DISABLED-MUTATIONS:     if body.script is not None:
+# DISABLED-MUTATIONS:         args += ["--script", body.script]
+# DISABLED-MUTATIONS:     # On edit, `no_agent=True` enables, `False` disables (via --agent). None = leave alone.
+# DISABLED-MUTATIONS:     if body.no_agent is True:
+# DISABLED-MUTATIONS:         args += ["--no-agent"]
+# DISABLED-MUTATIONS:     elif body.no_agent is False:
+# DISABLED-MUTATIONS:         args += ["--agent"]
+# DISABLED-MUTATIONS:     if body.repeat is not None:
+# DISABLED-MUTATIONS:         args += ["--repeat", str(body.repeat)]
+# DISABLED-MUTATIONS:     if body.workdir is not None:
+# DISABLED-MUTATIONS:         args += ["--workdir", body.workdir]
+# DISABLED-MUTATIONS:     result = _run_hermes_cron(args)
+# DISABLED-MUTATIONS:     if not result["ok"]:
+# DISABLED-MUTATIONS:         raise HTTPException(status_code=502, detail=result["error"])
+# DISABLED-MUTATIONS:     return {"ok": True, "output": result["output"]}
+
+
+# DISABLED-MUTATIONS: @app.get("/hermes/cron/scripts")
+# DISABLED-MUTATIONS: async def list_cron_scripts():
+# DISABLED-MUTATIONS:     """List user-defined scripts under ~/.hermes/scripts/ usable with --script.
+# DISABLED-MUTATIONS:     Returns names relative to the scripts dir (Hermes resolves them itself)."""
+# DISABLED-MUTATIONS:     scripts_dir = HERMES_DIR / "scripts"
+# DISABLED-MUTATIONS:     if not scripts_dir.exists() or not scripts_dir.is_dir():
+# DISABLED-MUTATIONS:         return {"scripts": []}
+# DISABLED-MUTATIONS:     out: List[Dict[str, Any]] = []
+# DISABLED-MUTATIONS:     for p in sorted(scripts_dir.iterdir()):
+# DISABLED-MUTATIONS:         if not p.is_file():
+# DISABLED-MUTATIONS:             continue
+# DISABLED-MUTATIONS:         if p.name.startswith("."):
+# DISABLED-MUTATIONS:             continue
+# DISABLED-MUTATIONS:         out.append({
+# DISABLED-MUTATIONS:             "name": p.name,
+# DISABLED-MUTATIONS:             "size": p.stat().st_size,
+# DISABLED-MUTATIONS:             # .sh/.bash run via bash per the CLI help; everything else via Python.
+# DISABLED-MUTATIONS:             "kind": "bash" if p.suffix in (".sh", ".bash") else "python",
+# DISABLED-MUTATIONS:         })
+# DISABLED-MUTATIONS:     return {"scripts": out}
+
+
+# DISABLED-MUTATIONS: def _cron_action(job_id: str, action: str) -> Dict[str, Any]:
+# DISABLED-MUTATIONS:     from fastapi import HTTPException
+# DISABLED-MUTATIONS:     if not job_id:
+# DISABLED-MUTATIONS:         raise HTTPException(status_code=400, detail="job id is required")
+# DISABLED-MUTATIONS:     result = _run_hermes_cron([action, job_id])
+# DISABLED-MUTATIONS:     if not result["ok"]:
+# DISABLED-MUTATIONS:         raise HTTPException(status_code=502, detail=result["error"])
+# DISABLED-MUTATIONS:     return {"ok": True, "output": result["output"]}
+
+
+# DISABLED-MUTATIONS: @app.delete("/hermes/cron/jobs/{job_id}")
+# DISABLED-MUTATIONS: async def delete_cron_job(job_id: str):
+# DISABLED-MUTATIONS:     return _cron_action(job_id, "remove")
+
+
+# DISABLED-MUTATIONS: @app.post("/hermes/cron/jobs/{job_id}/pause")
+# DISABLED-MUTATIONS: async def pause_cron_job(job_id: str):
+# DISABLED-MUTATIONS:     return _cron_action(job_id, "pause")
+
+
+# DISABLED-MUTATIONS: @app.post("/hermes/cron/jobs/{job_id}/resume")
+# DISABLED-MUTATIONS: async def resume_cron_job(job_id: str):
+# DISABLED-MUTATIONS:     return _cron_action(job_id, "resume")
+
+
+# DISABLED-MUTATIONS: @app.post("/hermes/cron/jobs/{job_id}/run")
+# DISABLED-MUTATIONS: async def trigger_cron_job(job_id: str):
+# DISABLED-MUTATIONS:     return _cron_action(job_id, "run")
 
 
 @app.get("/hermes/overview")
@@ -581,6 +860,174 @@ async def hermes_overview():
         "gateway": _hermes_gateway_state(),
         "cron_jobs": _hermes_cron_jobs(),
     }
+
+
+# --------------------------------------------------------------------------- #
+# Update checker — compares local git HEAD to remote main, pulls curated
+# highlights from UPDATE.json at the repo root. The "What's new" banner in
+# the dashboard renders only when behind=true.
+# --------------------------------------------------------------------------- #
+import subprocess as _subprocess
+import time as _upd_time
+import urllib.request as _urlreq
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_TT_HOME = HOME / ".tokentelemetry"
+_UPDATE_CACHE = _TT_HOME / ".update-check.json"
+_REPO_OWNER = "VasiHemanth"
+_REPO_NAME = "tokentelemetry"
+_UPDATE_CACHE_TTL = 60 * 60       # 1 hour — quick enough that hotfixes
+                                  # propagate same-day, infrequent enough to
+                                  # not hammer GitHub on dashboard reloads.
+_UPDATE_FETCH_TIMEOUT = 5         # seconds
+
+
+def _local_commit() -> Optional[str]:
+    """Current local commit. None if not a git checkout (zipball install)."""
+    try:
+        proc = _subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(_REPO_ROOT), capture_output=True, text=True, timeout=3,
+        )
+        if proc.returncode == 0:
+            return proc.stdout.strip() or None
+    except Exception:
+        pass
+    return None
+
+
+def _read_cache() -> Optional[Dict[str, Any]]:
+    if not _UPDATE_CACHE.exists():
+        return None
+    try:
+        with open(_UPDATE_CACHE, "r", encoding="utf-8") as f:
+            cached = json.load(f)
+        if not isinstance(cached, dict):
+            return None
+        age = _upd_time.time() - float(cached.get("fetched_at", 0))
+        if age > _UPDATE_CACHE_TTL:
+            return None
+        return cached
+    except Exception:
+        return None
+
+
+def _write_cache(payload: Dict[str, Any]) -> None:
+    try:
+        _TT_HOME.mkdir(parents=True, exist_ok=True)
+        payload = {**payload, "fetched_at": _upd_time.time()}
+        with open(_UPDATE_CACHE, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+    except Exception:
+        pass
+
+
+def _fetch_remote() -> Optional[Dict[str, Any]]:
+    """Hit GitHub for (a) latest commit on main, (b) curated UPDATE.json.
+    Returns None on any network error — caller falls back to cache."""
+    sha_url = f"https://api.github.com/repos/{_REPO_OWNER}/{_REPO_NAME}/commits/main"
+    update_url = f"https://raw.githubusercontent.com/{_REPO_OWNER}/{_REPO_NAME}/main/UPDATE.json"
+    try:
+        req = _urlreq.Request(sha_url, headers={"User-Agent": "tokentelemetry-update-check"})
+        with _urlreq.urlopen(req, timeout=_UPDATE_FETCH_TIMEOUT) as r:
+            sha_data = json.loads(r.read().decode("utf-8"))
+        latest_sha = sha_data.get("sha")
+        if not latest_sha:
+            return None
+    except Exception:
+        return None
+
+    # Two supported shapes:
+    #   - new style: {"releases": [{tag, title, highlights:[...]}, ...]}
+    #   - legacy:    {"highlights": [...]} (one flat list — auto-wrapped into
+    #                  a single synthetic release)
+    # Inside `highlights`, items can be strings or {title, description, href}.
+    # Normalize everything to a `releases` array so the frontend has one shape.
+    releases: List[Dict[str, Any]] = []
+    release_url = f"https://github.com/{_REPO_OWNER}/{_REPO_NAME}/commits/main"
+
+    def _norm_hl(items) -> List[Dict[str, Any]]:
+        out: List[Dict[str, Any]] = []
+        for h in (items or [])[:5]:  # cap per release so noisy ones stay readable
+            if isinstance(h, str) and h.strip():
+                out.append({"title": h.strip(), "description": None, "href": None})
+            elif isinstance(h, dict) and h.get("title"):
+                out.append({
+                    "title": str(h["title"]).strip(),
+                    "description": (str(h["description"]).strip() if h.get("description") else None),
+                    "href": (str(h["href"]).strip() if h.get("href") else None),
+                })
+        return out
+
+    try:
+        req2 = _urlreq.Request(update_url, headers={"User-Agent": "tokentelemetry-update-check"})
+        with _urlreq.urlopen(req2, timeout=_UPDATE_FETCH_TIMEOUT) as r:
+            upd = json.loads(r.read().decode("utf-8"))
+
+        if isinstance(upd.get("releases"), list):
+            for r in upd["releases"][:6]:  # show up to 6 prior releases
+                if not isinstance(r, dict):
+                    continue
+                hls = _norm_hl(r.get("highlights"))
+                if not hls and not r.get("title"):
+                    continue
+                releases.append({
+                    "tag": (str(r["tag"]).strip() if r.get("tag") else None),
+                    "title": (str(r["title"]).strip() if r.get("title") else None),
+                    "highlights": hls,
+                })
+        elif upd.get("highlights"):
+            # Legacy flat shape — wrap into one synthetic release.
+            releases.append({"tag": None, "title": None, "highlights": _norm_hl(upd["highlights"])})
+
+        release_url = upd.get("release_url") or release_url
+    except Exception:
+        # UPDATE.json missing or malformed: still report the commit diff.
+        pass
+
+    return {"latest": latest_sha, "releases": releases, "release_url": release_url}
+
+
+@app.get("/version")
+async def get_version():
+    """Banner data: how far behind the local checkout is + 1-3 curated bullets
+    about what's in the update. Set TT_NO_UPDATE_CHECK=1 to disable."""
+    current = _local_commit()
+    base: Dict[str, Any] = {
+        "current": current,
+        "latest": None,
+        "behind": False,
+        "releases": [],
+        "release_url": f"https://github.com/{_REPO_OWNER}/{_REPO_NAME}",
+        "source": "none",
+        "repo": f"{_REPO_OWNER}/{_REPO_NAME}",
+    }
+    if os.environ.get("TT_NO_UPDATE_CHECK"):
+        base["source"] = "disabled"
+        return base
+    if not current:
+        # Not a git checkout — nothing to compare against.
+        return base
+
+    cached = _read_cache()
+    remote = cached if cached else _fetch_remote()
+    if remote is None:
+        base["source"] = "offline"
+        return base
+    if not cached:
+        _write_cache(remote)
+
+    latest = remote.get("latest")
+    base["latest"] = latest
+    # Tolerate both old-cache (highlights) and new-cache (releases) entries.
+    if remote.get("releases"):
+        base["releases"] = remote["releases"]
+    elif remote.get("highlights"):
+        base["releases"] = [{"tag": None, "title": None, "highlights": remote["highlights"]}]
+    base["release_url"] = remote.get("release_url") or base["release_url"]
+    base["behind"] = bool(latest) and latest != current
+    base["source"] = "cache" if cached else "github"
+    return base
 
 
 @app.get("/")
@@ -2658,6 +3105,143 @@ async def get_config(project: Optional[str] = None):
         },
     }
 
+# --------------------------------------------------------------------------- #
+# Trace summaries
+# --------------------------------------------------------------------------- #
+from fastapi import Body, HTTPException
+from summarizers import get_summarizer, available_summarizers, SummarizerError
+import summaries as _summaries
+
+async def _session_meta(session_id: str, agent: str):
+    for s in await get_sessions_cached():
+        if s["id"] == session_id and (not agent or s["agent"] == agent):
+            t = s.get("tokens") or {}
+            return {
+                "agent": s["agent"], "project": s.get("project"), "model": s.get("model"),
+                "input": t.get("input", 0), "output": t.get("output", 0),
+                "total": t.get("total", 0), "cost": s.get("cost", 0.0),
+            }
+    return None
+
+@app.get("/summarizer/available")
+async def summarizer_available():
+    return {"backends": [
+        {"name": s.name, "display_name": s.display_name} for s in available_summarizers()
+    ]}
+
+@app.get("/config/summarizer")
+async def get_summarizer_config():
+    return _summaries.load_config()
+
+@app.put("/config/summarizer")
+async def put_summarizer_config(cfg: dict = Body(...)):
+    return _summaries.save_config(cfg)
+
+
+@app.get("/summarizer/ollama/models")
+async def list_ollama_models():
+    """Enumerate the local Ollama model registry. Used by the settings UI to
+    let the user pick which model summarizes their traces."""
+    from summarizers.ollama import list_installed_models
+    return {"models": list_installed_models()}
+
+
+@app.get("/summarizer/codex/models")
+async def list_codex_models():
+    """Curated cheaper-tier OpenAI models for users without Pro/Plus or with
+    limited API access. Static list — the Codex CLI doesn't expose enumerable
+    model discovery."""
+    from summarizers.codex import SUGGESTED_MODELS
+    return {"models": SUGGESTED_MODELS}
+
+@app.get("/sessions/{session_id}/summary")
+async def get_summary(session_id: str):
+    cached = _summaries.get_cached(session_id)
+    return {"summary": cached}
+
+@app.post("/sessions/{session_id}/summary")
+async def make_summary(session_id: str, agent: str, force: bool = False):
+    detail = await get_session_detail(session_id, agent)
+    if isinstance(detail, dict) and detail.get("error"):
+        raise HTTPException(status_code=404, detail=detail.get("error", "session not found"))
+    events = _summaries.normalize_detail(detail)
+    if not events:
+        raise HTTPException(status_code=422, detail="no trace content to summarize")
+
+    chash = _summaries.content_hash(session_id, events)
+    cached = _summaries.get_cached(session_id)
+    if cached and not force and cached.get("content_hash") == chash and cached.get("narrative"):
+        return {"summary": {**cached, "stale": False}}
+
+    meta = await _session_meta(session_id, agent) or {"agent": agent}
+    brief = _summaries.condense_trace(events, meta)
+
+    cfg = _summaries.load_config()
+    backend_name = cfg.get("backend")
+    narrative = None
+    gen_error = None
+    if cfg.get("enabled") and backend_name:
+        sm = get_summarizer(backend_name, cfg.get("model"))
+        if sm and sm.is_available():
+            try:
+                raw = sm.summarize(_summaries.build_prompt(brief))
+                narrative = _summaries.parse_narrative(raw)
+            except SummarizerError as e:
+                gen_error = str(e)
+        else:
+            gen_error = f"summarizer '{backend_name}' is not available"
+
+    if narrative is None and cached and cached.get("narrative"):
+        narrative = cached["narrative"]
+
+    result = _summaries.store(
+        session_id, meta.get("agent", agent), chash,
+        backend_name or "", cfg.get("model"),
+        brief, narrative or {}, 0.0,
+    )
+    error_info = None
+    if gen_error:
+        from summarizers.errors import classify as _classify_err
+        error_info = _classify_err(gen_error, backend_name=backend_name or "")
+    return {"summary": {**result, "stale": False}, "error": gen_error, "error_info": error_info}
+
+@app.post("/summaries/recent")
+async def summarize_recent(limit: int = 20):
+    sessions = await get_sessions_cached()
+    sessions = sorted(sessions, key=lambda s: s.get("timestamp") or "", reverse=True)[:limit]
+    done = skipped = failed = 0
+    for s in sessions:
+        try:
+            res = await make_summary(s["id"], s["agent"], force=False)
+            if res.get("error"):
+                failed += 1
+            elif res["summary"].get("narrative"):
+                done += 1
+            else:
+                skipped += 1
+        except HTTPException:
+            failed += 1
+    return {"requested": len(sessions), "summarized": done, "skipped": skipped, "failed": failed}
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+
+    # Port resolution order: --port CLI arg → TT_API_PORT env var → 8000.
+    # bin/cli.js passes --port; running the file directly (uvicorn / python)
+    # honors the env var so devs can override without editing args.
+    def _resolve_port() -> int:
+        argv = sys.argv[1:]
+        for i, arg in enumerate(argv):
+            if arg == "--port" and i + 1 < len(argv):
+                try: return int(argv[i + 1])
+                except ValueError: pass
+            if arg.startswith("--port="):
+                try: return int(arg.split("=", 1)[1])
+                except ValueError: pass
+        env_port = os.environ.get("TT_API_PORT")
+        if env_port:
+            try: return int(env_port)
+            except ValueError: pass
+        return 8000
+
+    uvicorn.run(app, host="127.0.0.1", port=_resolve_port())

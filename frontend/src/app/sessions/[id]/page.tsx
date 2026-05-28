@@ -9,6 +9,7 @@ import Link from "next/link";
 import { format } from "date-fns";
 import { AgentBadge, Badge, Button, Skeleton } from "@/components/ui";
 import SourceBadge from "@/components/SourceBadge";
+import SummaryPanel from "@/components/summarizer/SummaryPanel";
 import { API_BASE } from "@/lib/api";
 
 interface Artifact {
@@ -443,7 +444,14 @@ export default function SessionDetailPage() {
           <div className="flex items-start justify-between gap-4 flex-wrap">
             <div className="flex items-start gap-3 min-w-0">
               <button
-                onClick={() => router.back()}
+                onClick={() => {
+                  const hasHistory = typeof window !== "undefined" && document.referrer.includes(window.location.host);
+                  if (hasHistory) {
+                    router.back();
+                  } else {
+                    router.push(agent === "hermes" ? "/hermes" : "/");
+                  }
+                }}
                 title="Back"
                 aria-label="Back"
                 className="h-9 w-9 grid place-items-center rounded-[var(--tt-radius)] border border-[var(--tt-border)] text-[var(--tt-fg-muted)] hover:text-[var(--tt-fg)] hover:tt-tint-1 transition-colors shrink-0 mt-0.5"
@@ -596,6 +604,12 @@ export default function SessionDetailPage() {
 
           {/* CENTER: Conversation */}
           <section className="overflow-y-auto max-h-[calc(100vh-200px)] p-8">
+             {/* Trace summary — narrative + deterministic brief, near the top of the trace */}
+             {agent && (
+               <div className="mb-8">
+                 <SummaryPanel sessionId={id} agent={agent} />
+               </div>
+             )}
              {/* Hermes session chain (compression / branched continuations) */}
              {agent === "hermes" && sessionInfo && allHermesSessions && (
                <HermesChainBanner current={sessionInfo} all={allHermesSessions} />

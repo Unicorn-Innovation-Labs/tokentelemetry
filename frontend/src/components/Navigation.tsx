@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
-  LayoutDashboard, Folder, BarChart3, Activity,
+  LayoutDashboard, Folder, BarChart3, Activity, Settings2,
   PanelLeftOpen, PanelLeftClose,
 } from "lucide-react";
 import { useResource } from "@/lib/api";
@@ -59,33 +59,9 @@ export default function Navigation({ isCollapsed, setIsCollapsed }: NavigationPr
           ...(availableAgents.includes("hermes")
             ? [{ name: "Hermes Agent", href: "/hermes", icon: HermesIcon as typeof LayoutDashboard }]
             : []),
-        ].map((link) => {
-          const Icon = link.icon;
-          const isActive = pathname === link.href || (link.href !== "/" && pathname.startsWith(link.href));
-          return (
-            <Link
-              key={link.name}
-              href={link.href}
-              title={isCollapsed ? link.name : undefined}
-              className={cn(
-                "relative flex items-center gap-3 rounded-[var(--tt-radius)] px-2.5 py-2 text-[13px] font-medium transition-colors",
-                isActive
-                  ? "tt-tint-1 text-[var(--tt-fg)]"
-                  : "text-[var(--tt-fg-muted)] hover:text-[var(--tt-fg)] hover:tt-tint-1",
-                isCollapsed && "justify-center",
-              )}
-            >
-              {isActive && (
-                <span
-                  aria-hidden
-                  className="absolute left-0 top-1.5 bottom-1.5 w-[2px] rounded-r-full bg-[var(--tt-brand)] shadow-[0_0_10px_var(--tt-brand-glow)]"
-                />
-              )}
-              <Icon size={16} strokeWidth={isActive ? 2.25 : 1.75} className={isActive ? "text-[var(--tt-brand)]" : ""} />
-              {!isCollapsed && <span>{link.name}</span>}
-            </Link>
-          );
-        })}
+        ].map((link) => (
+          <NavLink key={link.name} link={link} pathname={pathname} isCollapsed={isCollapsed} />
+        ))}
       </div>
 
       {/* Connected agents */}
@@ -114,6 +90,12 @@ export default function Navigation({ isCollapsed, setIsCollapsed }: NavigationPr
           </div>
         )}
 
+        <NavLink
+          link={{ name: "Settings", href: "/settings", icon: Settings2 }}
+          pathname={pathname}
+          isCollapsed={isCollapsed}
+        />
+
         <ThemeToggle collapsed={isCollapsed} />
 
         <button
@@ -129,5 +111,36 @@ export default function Navigation({ isCollapsed, setIsCollapsed }: NavigationPr
         </button>
       </div>
     </nav>
+  );
+}
+
+type NavLinkItem = { name: string; href: string; icon: typeof LayoutDashboard };
+
+function NavLink({ link, pathname, isCollapsed }: {
+  link: NavLinkItem; pathname: string; isCollapsed: boolean;
+}) {
+  const Icon = link.icon;
+  const isActive = pathname === link.href || (link.href !== "/" && pathname.startsWith(link.href));
+  return (
+    <Link
+      href={link.href}
+      title={isCollapsed ? link.name : undefined}
+      className={cn(
+        "relative flex items-center gap-3 rounded-[var(--tt-radius)] px-2.5 py-2 text-[13px] font-medium transition-colors",
+        isActive
+          ? "tt-tint-1 text-[var(--tt-fg)]"
+          : "text-[var(--tt-fg-muted)] hover:text-[var(--tt-fg)] hover:tt-tint-1",
+        isCollapsed && "justify-center",
+      )}
+    >
+      {isActive && (
+        <span
+          aria-hidden
+          className="absolute left-0 top-1.5 bottom-1.5 w-[2px] rounded-r-full bg-[var(--tt-brand)] shadow-[0_0_10px_var(--tt-brand-glow)]"
+        />
+      )}
+      <Icon size={16} strokeWidth={isActive ? 2.25 : 1.75} className={isActive ? "text-[var(--tt-brand)]" : ""} />
+      {!isCollapsed && <span>{link.name}</span>}
+    </Link>
   );
 }
