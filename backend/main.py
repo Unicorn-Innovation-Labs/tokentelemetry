@@ -65,17 +65,14 @@ def _pid_alive(pid: int) -> bool:
 
 app = FastAPI(title="TokenTelemetry API")
 
-# Enable CORS for Next.js frontend
+# Enable CORS for the Next.js frontend.
+#
+# We use a regex over an explicit allowlist so the frontend can pick any local
+# port (the user can pass --port to start.sh / bin/cli.js). Origins are still
+# locked to loopback — only localhost/127.0.0.1 on any port are accepted.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://localhost:3001",
-        "http://127.0.0.1:3001",
-        "http://localhost:3002",
-        "http://127.0.0.1:3002",
-    ],
+    allow_origin_regex=r"^http://(localhost|127\.0\.0\.1):\d+$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -3039,4 +3036,23 @@ async def summarize_recent(limit: int = 20):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+
+    # Port resolution order: --port CLI arg → TT_API_PORT env var → 8000.
+    # bin/cli.js passes --port; running the file directly (uvicorn / python)
+    # honors the env var so devs can override without editing args.
+    def _resolve_port() -> int:
+        argv = sys.argv[1:]
+        for i, arg in enumerate(argv):
+            if arg == "--port" and i + 1 < len(argv):
+                try: return int(argv[i + 1])
+                except ValueError: pass
+            if arg.startswith("--port="):
+                try: return int(arg.split("=", 1)[1])
+                except ValueError: pass
+        env_port = os.environ.get("TT_API_PORT")
+        if env_port:
+            try: return int(env_port)
+            except ValueError: pass
+        return 8000
+
+    uvicorn.run(app, host="127.0.0.1", port=_resolve_port())

@@ -33,6 +33,48 @@ function die(msg) {
   process.exit(1);
 }
 
+// --- CLI argument parsing -------------------------------------------------
+// Accepts --port / --api-port (and -p / -a shorthands), in `--flag value` or
+// `--flag=value` form. Anything unknown triggers the help text.
+function parseArgs(argv) {
+  const out = { frontPort: 3000, apiPort: 8000 };
+  const take = (i) => {
+    if (i + 1 >= argv.length) die(`expected a value after ${argv[i]}`);
+    return argv[i + 1];
+  };
+  const setPort = (key, raw) => {
+    const n = parseInt(raw, 10);
+    if (!Number.isFinite(n) || n < 1 || n > 65535) die(`invalid port: ${raw}`);
+    out[key] = n;
+  };
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '-h' || a === '--help') { printHelp(); process.exit(0); }
+    else if (a === '-p' || a === '--port')     { setPort('frontPort', take(i)); i++; }
+    else if (a.startsWith('--port='))          { setPort('frontPort', a.slice('--port='.length)); }
+    else if (a === '-a' || a === '--api-port') { setPort('apiPort',   take(i)); i++; }
+    else if (a.startsWith('--api-port='))      { setPort('apiPort',   a.slice('--api-port='.length)); }
+    else die(`unknown argument: ${a}\nRun with --help for usage.`);
+  }
+  return out;
+}
+
+function printHelp() {
+  console.log([
+    'Usage: tokentelemetry [options]',
+    '',
+    'Options:',
+    '  -p, --port <N>       Frontend (Next.js) port. Default 3000.',
+    '  -a, --api-port <N>   Backend (FastAPI) port. Default 8000.',
+    '  -h, --help           Show this help.',
+    '',
+    'Examples:',
+    '  start.sh                                 # 3000 / 8000',
+    '  start.sh --port 4000 --api-port 9000     # custom both',
+    '  start.sh -p 4000                         # frontend on 4000, backend stays 8000',
+  ].join('\n'));
+}
+
 function run(cmd, args, opts = {}) {
   const res = spawnSync(cmd, args, { stdio: 'inherit', shell: isWindows, ...opts });
   if (res.status !== 0) die(`"${cmd} ${args.join(' ')}" exited with ${res.status}`);
@@ -160,35 +202,41 @@ function ensureFrontend() {
 }
 
 async function start() {
+  const { frontPort, apiPort } = parseArgs(process.argv.slice(2));
+
   console.log('\nTokenTelemetry');
   console.log('--------------');
   checkNode();
   ensureBackend();
   ensureFrontend();
 
-  // Fail fast if either required port is taken — otherwise Next bumps to 3001
+  // Fail fast if either required port is taken — otherwise Next bumps to N+1
   // and the auto-opened browser lands on the wrong URL.
-  await ensurePortsFree([3000, 8000]);
+  await ensurePortsFree([frontPort, apiPort]);
 
+  const apiBase = `http://127.0.0.1:${apiPort}`;
   console.log('\n→ launching services…');
-  const backend = spawn(venvPython, ['main.py'], {
+  const backend = spawn(venvPython, ['main.py', '--port', String(apiPort)], {
     cwd: backendDir,
     stdio: 'inherit',
     // detached on POSIX gives us a process group we can signal as a unit
     detached: !isWindows,
   });
 
-  const frontend = spawn('npm', ['run', 'dev', '--', '--port', '3000'], {
+  const frontend = spawn('npm', ['run', 'dev', '--', '--port', String(frontPort)], {
     cwd: frontendDir,
     stdio: 'inherit',
     shell: true,
     detached: !isWindows,
-    env: { ...process.env, PORT: '3000' },
+    // NEXT_PUBLIC_API_BASE is read by frontend/src/lib/api.ts at startup so the
+    // browser knows where the backend lives. Without this the frontend would
+    // hardcode :8000 and silently 404 every fetch whenever --api-port is used.
+    env: { ...process.env, PORT: String(frontPort), NEXT_PUBLIC_API_BASE: apiBase },
   });
 
-  const dashUrl = 'http://localhost:3000';
+  const dashUrl = `http://localhost:${frontPort}`;
   console.log(`\nDashboard:  ${dashUrl}`);
-  console.log('API:        http://127.0.0.1:8000');
+  console.log(`API:        ${apiBase}`);
   console.log('Press Ctrl+C to stop.\n');
 
   // Auto-launch the dashboard once Next.js is actually responding.
