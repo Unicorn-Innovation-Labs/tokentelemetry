@@ -8,12 +8,14 @@ import { cn } from "@/lib/cn";
 import {
   Card, CardHeader, CardTitle, StatTile, EmptyState,
 } from "@/components/ui";
+import BudgetCard from "@/components/budgets/BudgetCard";
 import { useProject } from "../_lib/project-context";
 
 const DOW_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 export default function InsightsTab() {
-  const { sessions } = useProject();
+  const { sessions, decodedPath } = useProject();
+  const configHref = `/projects/${encodeURIComponent(decodedPath)}/config`;
   const [heatMetric, setHeatMetric] = useState<"sessions" | "tokens">("sessions");
 
   const insights = useMemo(() => {
@@ -123,6 +125,9 @@ export default function InsightsTab() {
 
   return (
     <div className="space-y-5">
+      {/* Budget — observational spend vs limit (project total + per-agent) */}
+      <BudgetCard projectPath={decodedPath} configHref={configHref} />
+
       {/* Streaks + tallies */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <StatTile label="Current streak" value={`${insights.current}d`} icon={<Flame size={16} />} accent="var(--tt-success)" />

@@ -21,6 +21,26 @@
       ]
     },
     {
+      "tag": "2026-05-31",
+      "title": "Notifications & project budgets",
+      "highlights": [
+        {
+          "title": "Per-project & per-agent budgets",
+          "description": "Set a monthly, weekly, or rolling-30-day spend limit on a project — overall and per coding agent (e.g. Claude $60, Codex unlimited). Track usage in dollars or tokens.",
+          "href": null
+        },
+        {
+          "title": "Budget at a glance",
+          "description": "Open any project to see spend vs limit: a budget pill in the header and a progress card under Insights, with a per-agent breakdown."
+        },
+        {
+          "title": "Notification center",
+          "description": "A bell in the sidebar collects budget alerts with an unread count; new alerts surface once at the top, then wait in the bell. Mark read or clear all when you're done.",
+          "href": null
+        }
+      ]
+    },
+    {
       "tag": "2026-05-28",
       "title": "Summarizer + ports + update banner",
       "highlights": [
