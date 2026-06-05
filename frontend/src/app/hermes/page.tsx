@@ -408,7 +408,7 @@ export default function HermesPage() {
                 <TH className="pl-5">Source</TH>
                 <TH>Model</TH>
                 <TH>Message</TH>
-                <TH className="text-right">Cost</TH>
+                <TH className="text-right">API equiv.</TH>
                 <TH className="text-right pr-5">Time</TH>
               </TR>
             </THead>
