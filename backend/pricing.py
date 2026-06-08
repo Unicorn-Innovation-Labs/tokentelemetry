@@ -200,8 +200,16 @@ def calculate_cost(
     output_tokens: int,
     cached_tokens: int = 0,
     provider: Optional[str] = None,
+    cache_creation_tokens: int = 0,
 ) -> float:
-    """Estimate cost in USD. Prefer (provider, model) when provider is known."""
+    """Estimate cost in USD. Prefer (provider, model) when provider is known.
+
+    ``cache_creation_tokens`` are prompt-cache WRITE tokens (Anthropic's
+    ``cache_creation_input_tokens``). Anthropic bills these at 1.25x the input
+    rate — distinct from ``cached_tokens`` (cache READ), billed at the much
+    cheaper ``cached_read`` rate. Defaults to 0 so existing positional callers
+    are unaffected.
+    """
     if not model_name:
         config = PRICING["_default"]
     else:
@@ -227,7 +235,11 @@ def calculate_cost(
     if cached_rate is None:
         cached_rate = in_rate * 0.1  # 2026-era default: cached read ≈ 10% of input
 
+    # Prompt-cache WRITE tokens cost 1.25x the input rate (Anthropic billing).
+    cache_write_rate = in_rate * 1.25
+
     in_cost = (input_tokens / 1_000_000) * in_rate
     out_cost = (output_tokens / 1_000_000) * out_rate
     cached_cost = (cached_tokens / 1_000_000) * cached_rate
-    return in_cost + out_cost + cached_cost
+    cache_write_cost = (cache_creation_tokens / 1_000_000) * cache_write_rate
+    return in_cost + out_cost + cached_cost + cache_write_cost

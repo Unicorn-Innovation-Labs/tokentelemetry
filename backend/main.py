@@ -1609,6 +1609,7 @@ def _scan_grok_sessions() -> List[Dict[str, Any]]:
             tokens["output"] = 0
             tokens["cached"] = 0
 
+            # Grok Build exposes only a single context-footprint total (no cache-write field); nothing to pass.
             tokens["cost"] = calculate_cost(model, tokens.get("input", 0), tokens.get("output", 0), tokens.get("cached", 0))
 
             # Prefer signals.modelsUsed for the model when available.
@@ -1914,15 +1915,15 @@ def _scan_sessions_sync():
                                 if usage:
                                     cr = usage.get("cache_read_input_tokens", 0) or 0
                                     cc = usage.get("cache_creation_input_tokens", 0) or 0
-                                    # cache_creation is billed at ~1.25x input rate; fold into input
-                                    # as the closest approximation under calculate_cost's single-param API.
-                                    sess["tokens"]["input"]  += (usage.get("input_tokens", 0) or 0) + cc
+                                    sess["tokens"]["input"]  += usage.get("input_tokens", 0) or 0
                                     sess["tokens"]["output"] += usage.get("output_tokens", 0) or 0
                                     # cached = unique cached-prefix size (high-water-mark), NOT per-turn sum
                                     sess["tokens"]["cached"] = max(sess["tokens"]["cached"], cr)
                                     sess["tokens"]["_cached_sum"] = sess["tokens"].get("_cached_sum", 0) + cr
+                                    # cache_creation (write) IS billed per event → cumulative, like input.
+                                    sess["tokens"]["cache_creation"] = sess["tokens"].get("cache_creation", 0) + cc
                                 sess["tokens"]["total"] = sess["tokens"]["input"] + sess["tokens"]["output"] + sess["tokens"]["cached"]
-                                sess["cost"] = calculate_cost(sess.get("model"), sess["tokens"]["input"], sess["tokens"]["output"], sess["tokens"]["cached"])
+                                sess["cost"] = calculate_cost(sess.get("model"), sess["tokens"]["input"], sess["tokens"]["output"], sess["tokens"]["cached"], cache_creation_tokens=sess["tokens"].get("cache_creation", 0))
                                 for item in msg.get("content", []):
                                     if item.get("type") == "tool_use":
                                         tool = item.get("name")
@@ -2029,6 +2030,7 @@ def _scan_sessions_sync():
                                     sess["tokens"]["cached"] = max(sess["tokens"]["cached"], cached)
                                     sess["tokens"]["output"] = max(sess["tokens"]["output"], output_billable)
                                     sess["tokens"]["total"]  = sess["tokens"]["input"] + sess["tokens"]["cached"] + sess["tokens"]["output"]
+                                    # Codex/OpenAI usage has no cache-write field (only cached read); nothing to pass.
                                     sess["cost"] = calculate_cost(sess.get("model"), sess["tokens"]["input"], sess["tokens"]["output"], sess["tokens"]["cached"])
                             if data.get("type") == "response_item":
                                 if data.get("payload", {}).get("type") == "function_call":
@@ -2161,6 +2163,7 @@ def _scan_sessions_sync():
                                             elif af.suffix.lower() in (".png", ".webp", ".jpg", ".jpeg"): artifacts.append({"name": af.name, "path": str(af), "type": "image"})
                                 except Exception: pass
 
+                                # Antigravity/Gemini token records expose no cache-write field; nothing to pass.
                                 tokens["cost"] = calculate_cost(model, tokens["input"], tokens["output"], tokens["cached"])
                                 if sid in _seen_antigravity: continue
                                 _seen_antigravity.add(sid)
@@ -2339,10 +2342,12 @@ def _scan_sessions_sync():
                                         usage = data.get("message", {}).get("usage", {})
                                         cr = usage.get("cache_read_input_tokens", 0) or 0
                                         cc = usage.get("cache_creation_input_tokens", 0) or 0
-                                        tokens["input"]  += (usage.get("input_tokens", 0) or 0) + cc
+                                        tokens["input"]  += usage.get("input_tokens", 0) or 0
                                         tokens["output"] += usage.get("output_tokens", 0) or 0
                                         tokens["cached"] = max(tokens["cached"], cr)
                                         tokens["_cached_sum"] = tokens.get("_cached_sum", 0) + cr
+                                        # cache_creation (write) IS billed per event → cumulative, like input.
+                                        tokens["cache_creation"] = tokens.get("cache_creation", 0) + cc
                                         for item in data.get("message", {}).get("content", []):
                                             if item.get("type") == "tool_use":
                                                 if item.get("name") not in mcp_tools: mcp_tools.append(item.get("name"))
@@ -2353,7 +2358,7 @@ def _scan_sessions_sync():
                                                     plans.append({"session_id": sid, "agent": "qwen", "timestamp": last_ts, "content": t_text})
                                 except Exception: continue
                         tokens["total"] = tokens["input"] + tokens["output"] + tokens["cached"]
-                        tokens["cost"] = calculate_cost(model, tokens["input"], tokens["output"], tokens["cached"])
+                        tokens["cost"] = calculate_cost(model, tokens["input"], tokens["output"], tokens["cached"], cache_creation_tokens=tokens.get("cache_creation", 0))
                         sessions.append({"id": sid, "agent": "qwen", "project": project_path, "timestamp": last_ts, "display": first_msg[:100], "tokens": tokens, "mcp_tools": mcp_tools, "has_plan": has_plan, "plans": plans, "model": model, "artifacts": artifacts, "cost": tokens["cost"]})
                     except Exception: continue
 
@@ -2370,6 +2375,7 @@ def _scan_sessions_sync():
                     mcp_tools = [t.get("function", {}).get("name") for t in meta.get("tools_available", []) if t.get("function", {}).get("name")]
                     model = meta.get("agent_config", {}).get("active_model")
                     project_path = apply_alias(meta.get("environment", {}).get("working_directory", "unknown"))
+                    # Vibe stats expose no cache-write field; nothing to pass.
                     tokens["cost"] = calculate_cost(model, tokens["input"], tokens["output"], tokens["cached"])
                     sessions.append({"id": sid, "agent": "vibe", "project": project_path, "timestamp": ts, "display": f"Vibe Session {sid[:8]}", "tokens": tokens, "mcp_tools": list(set(mcp_tools)), "has_plan": False, "plans": [], "model": model, "artifacts": [], "cost": tokens["cost"]})
             except Exception: continue
@@ -2441,10 +2447,12 @@ def _scan_sessions_sync():
                                             usage = msg.get("usage", {}) if isinstance(msg.get("usage"), dict) else {}
                                             cr = usage.get("cache_read_input_tokens", 0) or 0
                                             cc = usage.get("cache_creation_input_tokens", 0) or 0
-                                            tokens["input"]  += (usage.get("input_tokens", 0) or 0) + cc
+                                            tokens["input"]  += usage.get("input_tokens", 0) or 0
                                             tokens["output"] += usage.get("output_tokens", 0) or 0
                                             tokens["cached"] = max(tokens["cached"], cr)
                                             tokens["_cached_sum"] = tokens.get("_cached_sum", 0) + cr
+                                            # cache_creation (write) IS billed per event → cumulative, like input.
+                                            tokens["cache_creation"] = tokens.get("cache_creation", 0) + cc
                                             for item in msg.get("content", []) if isinstance(msg.get("content"), list) else []:
                                                 if item.get("type") == "tool_use":
                                                     name = item.get("name")
@@ -2460,7 +2468,7 @@ def _scan_sessions_sync():
                                                         has_plan = True
                                                         plans.append({"session_id": sid, "agent": "cursor", "timestamp": mtime, "content": t_text})
                                 tokens["total"] = tokens["input"] + tokens["output"] + tokens["cached"]
-                                tokens["cost"] = calculate_cost(model, tokens["input"], tokens["output"], tokens["cached"])
+                                tokens["cost"] = calculate_cost(model, tokens["input"], tokens["output"], tokens["cached"], cache_creation_tokens=tokens.get("cache_creation", 0))
                                 sessions.append({"id": sid, "agent": "cursor", "project": project_path, "timestamp": mtime, "display": first_msg[:100], "tokens": tokens, "mcp_tools": mcp_tools, "subagents": subagents, "has_plan": has_plan, "plans": plans, "model": model, "artifacts": artifacts, "cost": tokens["cost"]})
                             except Exception: continue
 
@@ -2515,6 +2523,7 @@ def _scan_sessions_sync():
                             elif "response" in req:
                                 for part in req["response"]: tokens["output"] += part.get("tokens", 0) or 0
                         tokens["total"] = tokens["input"] + tokens["output"] + tokens["cached"]
+                        # Copilot (VS Code) chat records expose no cache-write field; nothing to pass.
                         tokens["cost"] = calculate_cost(model, tokens["input"], tokens["output"], tokens["cached"])
                         sessions.append({"id": sid, "agent": "copilot", "project": project_path, "timestamp": last_ts, "display": first_msg[:100], "tokens": tokens, "mcp_tools": [], "has_plan": len(plans) > 0, "plans": plans, "model": model, "artifacts": [], "copilot_source": "vscode", "cost": tokens["cost"]})
                     except Exception: continue
@@ -2571,6 +2580,7 @@ def _scan_sessions_sync():
                     tokens["input"] = in_estimate
                     tokens["output"] = out_tokens
                 tokens["total"] = tokens["input"] + tokens["output"] + tokens["cached"]
+                # Copilot CLI modelMetrics has no distinct cache-write field; nothing to pass.
                 tokens["cost"] = calculate_cost(model, tokens["input"], tokens["output"], tokens["cached"])
                 if model and model not in models_used: models_used.insert(0, model)
                 ts = last_ts or start_ts or _file_mtime_utc(ev_file)
@@ -2673,14 +2683,13 @@ def _scan_sessions_sync():
                             tk = pdata.get("tokens") or {}
                             cache = tk.get("cache") or {}
                             cache_write = (cache.get("write", 0) or 0)
-                            # cache writes are billed at input rate (~1.25x on Anthropic, but
-                            # calculate_cost only exposes one cached-read parameter, so fold
-                            # writes into input as the closest available approximation).
-                            tokens["input"]  += (tk.get("input", 0) or 0) + cache_write
+                            tokens["input"]  += tk.get("input", 0) or 0
                             tokens["output"] += tk.get("output", 0) or 0
                             tokens["cached"] = max(tokens["cached"], cache.get("read", 0) or 0)
+                            # cache writes ARE billed per event → cumulative; priced at 1.25x input.
+                            tokens["cache_creation"] = tokens.get("cache_creation", 0) + cache_write
                     tokens["total"] = tokens["input"] + tokens["output"] + tokens["cached"]
-                    tokens["cost"] = calculate_cost(model, tokens["input"], tokens["output"], tokens["cached"])
+                    tokens["cost"] = calculate_cost(model, tokens["input"], tokens["output"], tokens["cached"], cache_creation_tokens=tokens.get("cache_creation", 0))
                     project_path = srow["directory"] or "unknown"
                     title = srow["title"] or ""
                     display = (first_user or title)[:100]
@@ -2727,12 +2736,17 @@ def _scan_sessions_sync():
                     in_t  = srow["input_tokens"] or 0
                     out_t = srow["output_tokens"] or 0
                     reas  = srow["reasoning_tokens"] or 0
-                    cached = (srow["cache_read_tokens"] or 0) + (srow["cache_write_tokens"] or 0)
+                    # Split cache read (cheap, ~0.1x input) from cache write (1.25x input).
+                    # Do NOT sum them: they bill at wildly different rates.
+                    cache_read  = srow["cache_read_tokens"] or 0
+                    cache_write = srow["cache_write_tokens"] or 0
+                    cached = cache_read
                     # Hermes does NOT price reasoning_tokens (verified). Keep them
                     # separate so we can surface MiMo-style silent-waste sessions.
                     tokens = {"input": in_t, "output": out_t, "cached": cached,
+                              "cache_creation": cache_write,
                               "reasoning": reas,
-                              "total": in_t + out_t + cached + reas}
+                              "total": in_t + out_t + cached + cache_write + reas}
                     # Anomaly: reasoning dominates output AND is non-trivial in absolute terms.
                     # Cf. MiMo thinking-mode silent-waste (Hermes issue #27325).
                     cost_anomaly = bool(reas > 5000 and reas > out_t)
@@ -2740,7 +2754,7 @@ def _scan_sessions_sync():
                     # Prefer Hermes's own cost (it knows exotic models we may not price)
                     cost = srow["actual_cost_usd"] if srow["actual_cost_usd"] is not None else srow["estimated_cost_usd"]
                     if cost is None:
-                        cost = calculate_cost(model, in_t, out_t, cached, provider=srow["billing_provider"])
+                        cost = calculate_cost(model, in_t, out_t, cached, provider=srow["billing_provider"], cache_creation_tokens=cache_write)
                     tokens["cost"] = cost
                     # First user message → display fallback when title is empty
                     first_user = ""
