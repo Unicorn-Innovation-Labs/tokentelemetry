@@ -82,21 +82,41 @@ def _macos_battery_watts() -> Optional[float]:
     volt = re.search(r'"Voltage"\s*=\s*(\d+)', out)
     if not amp or not volt:
         return None
-    milliamps = abs(int(amp.group(1)))
+    # InstantAmperage is a signed value often stored as an unsigned 64-bit int —
+    # e.g. discharge shows up as 18446744073709551334 (= -282 mA in two's
+    # complement). Decode it before taking the magnitude, or we'd compute a
+    # nonsensical quintillion-watt figure.
+    raw = int(amp.group(1))
+    if raw >= 2 ** 63:
+        raw -= 2 ** 64
+    milliamps = abs(raw)
     millivolts = int(volt.group(1))
     watts = (milliamps / 1000.0) * (millivolts / 1000.0)
     return watts if watts > 0 else None
+
+
+# A personal machine's draw under inference load realistically sits well under
+# this. Anything outside (0, MAX] is treated as a bad reading and discarded — a
+# guard against parsing glitches (e.g. unsigned battery counters) reaching cost.
+MAX_PLAUSIBLE_WATTS = 2000.0
+
+
+def _sane(watts: Optional[float]) -> Optional[float]:
+    if watts is None:
+        return None
+    return watts if 0 < watts <= MAX_PLAUSIBLE_WATTS else None
 
 
 def read_power_watts() -> Optional[Dict[str, Any]]:
     """Best available *real* power reading, or None if none is available.
 
     Returns ``{"watts": float, "source": str, "confidence": "measured"}`` or None.
+    Implausible values (≤0 or > MAX_PLAUSIBLE_WATTS) are discarded as None.
     """
-    w = _nvidia_smi_watts()
+    w = _sane(_nvidia_smi_watts())
     if w is not None:
         return {"watts": round(w, 1), "source": "nvidia-smi", "confidence": "measured"}
-    w = _macos_battery_watts()
+    w = _sane(_macos_battery_watts())
     if w is not None:
         return {"watts": round(w, 1), "source": "macos-battery", "confidence": "measured"}
     return None

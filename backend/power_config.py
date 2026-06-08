@@ -41,6 +41,9 @@ from typing import Any, Dict, List, Optional
 # intentionally conservative so the electricity estimate is in the right ballpark
 # without claiming false precision.
 DEFAULT_LOAD_WATTS = 80
+# Hard ceiling: anything above this is rejected as garbage (e.g. a misparsed
+# unsigned battery counter), so it can never reach the cost math.
+MAX_LOAD_WATTS = 10000
 DEFAULT_COST_PER_KWH = 0.15
 DEFAULT_SUBSCRIPTION_ENDPOINTS: List[str] = []
 # Extra endpoints (beyond loopback) the user runs models on locally, e.g. a LAN
@@ -99,7 +102,7 @@ def local_power_enabled() -> bool:
         return False
     lw = raw.get("loadWatts")
     cpk = raw.get("costPerKwh")
-    lw_ok = isinstance(lw, (int, float)) and not isinstance(lw, bool) and lw > 0
+    lw_ok = isinstance(lw, (int, float)) and not isinstance(lw, bool) and 0 < lw <= MAX_LOAD_WATTS
     cpk_ok = isinstance(cpk, (int, float)) and not isinstance(cpk, bool) and cpk >= 0
     return bool(lw_ok or cpk_ok)
 
@@ -126,7 +129,7 @@ def load_power_config() -> Dict[str, Any]:
         return config
 
     lw = raw.get("loadWatts")
-    if isinstance(lw, (int, float)) and not isinstance(lw, bool) and lw > 0:
+    if isinstance(lw, (int, float)) and not isinstance(lw, bool) and 0 < lw <= MAX_LOAD_WATTS:
         config["loadWatts"] = int(lw)
 
     cpk = raw.get("costPerKwh")
@@ -157,7 +160,7 @@ def save_power_config(updates: Dict[str, Any]) -> Dict[str, Any]:
     config = load_power_config()
 
     lw = updates.get("loadWatts")
-    if isinstance(lw, (int, float)) and not isinstance(lw, bool) and lw > 0:
+    if isinstance(lw, (int, float)) and not isinstance(lw, bool) and 0 < lw <= MAX_LOAD_WATTS:
         config["loadWatts"] = int(lw)
 
     cpk = updates.get("costPerKwh")

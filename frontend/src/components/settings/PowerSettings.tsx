@@ -69,10 +69,10 @@ export function PowerSettings() {
       const r = await calibratePower();
       if (r.measured != null) {
         setWatts(String(Math.round(r.measured)));
-        if (r.config) hydrate(r.config);
-        setCalibMsg(`Measured ${r.measured} W via ${r.source} — saved.`);
+        setCalibMsg(`✓ Measured ${r.measured} W via ${r.source} — review and click Save.`);
       } else {
-        setCalibMsg(r.reason ?? "No automatic reading available — enter a wattage manually.");
+        const why = r.reason ? ` (${r.reason})` : "";
+        setCalibMsg(`Couldn't read power automatically on this machine — type your watts in “Load watts” above and Save.${why}`);
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Calibration failed.");
@@ -129,7 +129,7 @@ export function PowerSettings() {
                 {calibMsg ?? meter?.capability.reason ?? "Measure your machine's real draw under load."}
               </div>
             </div>
-            <Button variant="secondary" onClick={calibrate} disabled={calibrating || (meter ? !meter.capability.available : false)}>
+            <Button variant="secondary" onClick={calibrate} disabled={calibrating}>
               {calibrating ? <><Loader2 size={13} className="animate-spin" /> Measuring…</> : "Measure"}
             </Button>
           </div>

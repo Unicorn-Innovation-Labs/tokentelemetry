@@ -3600,22 +3600,19 @@ async def get_power_meter():
 
 @app.post("/config/power/calibrate")
 async def calibrate_power():
-    """Sample real power for a few seconds and save it as loadWatts.
+    """Sample real power for a few seconds and return it as a SUGGESTION.
 
-    Returns the measured value + source on success. When no root-free source is
-    available (e.g. Apple Silicon on AC), returns `{measured: null, reason: …}`
-    WITHOUT changing config — the UI then asks the user to enter a wattage.
+    Does NOT persist — the UI fills the loadWatts field with the measured value
+    for the user to review and Save. When no root-free source is available (e.g.
+    Apple Silicon on AC), returns `{measured: null, reason: …}`.
     """
     from power_meter import sample_average_watts, capability
-    from power_config import save_power_config
     sample = sample_average_watts(duration_s=4.0, interval_s=1.0)
     if not sample:
         return {"measured": None, "reason": capability().get("reason")}
-    cfg = save_power_config({"loadWatts": int(round(sample["watts"]))})
-    _invalidate_sessions_cache()
     return {
         "measured": sample["watts"], "source": sample["source"],
-        "samples": sample.get("samples"), "config": {**cfg, "configured": True},
+        "samples": sample.get("samples"),
     }
 
 

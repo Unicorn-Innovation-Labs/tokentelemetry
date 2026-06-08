@@ -95,3 +95,31 @@ def test_macos_battery_discharge_watts(monkeypatch):
     monkeypatch.setattr(pm, "_run", lambda *a, **k: '"ExternalConnected" = No\n"InstantAmperage" = -2000\n"Voltage" = 12000')
     # 2000 mA * 12000 mV = 2A * 12V = 24 W
     assert pm._macos_battery_watts() == 24.0
+
+
+def test_macos_battery_unsigned_twos_complement(monkeypatch):
+    """Regression: discharge is stored as an unsigned 64-bit int (here -282 mA).
+    Must decode to ~3.7 W, not a quintillion."""
+    monkeypatch.setattr(pm.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(pm, "_run", lambda *a, **k: '"ExternalConnected" = No\n"InstantAmperage" = 18446744073709551334\n"Voltage" = 13182')
+    w = pm._macos_battery_watts()
+    assert 3 < w < 4  # 0.282 A * 13.182 V ≈ 3.72 W
+
+
+def test_implausible_reading_discarded(monkeypatch):
+    """Regression: a garbage reading (e.g. misparsed counter) must not propagate."""
+    monkeypatch.setattr(pm.shutil, "which", lambda _: "/usr/bin/nvidia-smi")
+    monkeypatch.setattr(pm, "_run", lambda *a, **k: "2.43e17\n")
+    assert pm.read_power_watts() is None  # > MAX_PLAUSIBLE_WATTS → None
+    monkeypatch.setattr(pm, "_run", lambda *a, **k: "-5\n")
+    assert pm.read_power_watts() is None  # negative → None
+
+
+def test_save_rejects_garbage_watts(tmp_path, monkeypatch):
+    """Regression: an absurd loadWatts can never be persisted to config."""
+    monkeypatch.setenv("TOKENTELEMETRY_HOME", str(tmp_path))
+    pc.save_power_config({"loadWatts": 65})
+    pc.save_power_config({"loadWatts": 243275660844081568})  # garbage
+    assert pc.load_power_config()["loadWatts"] == 65  # unchanged
+    pc.save_power_config({"loadWatts": 0})  # also invalid
+    assert pc.load_power_config()["loadWatts"] == 65
