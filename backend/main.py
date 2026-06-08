@@ -144,11 +144,21 @@ app = FastAPI(title="TokenTelemetry API")
 # Enable CORS for the Next.js frontend.
 #
 # We use a regex over an explicit allowlist so the frontend can pick any local
-# port (the user can pass --port to start.sh / bin/cli.js). Origins are still
-# locked to loopback — only localhost/127.0.0.1 on any port are accepted.
+# port (the user can pass --port to start.sh / bin/cli.js). Loopback is always
+# allowed; additional hosts (IPs / hostnames) can be opted in for remote access
+# via the TT_ALLOWED_ORIGINS env var (comma-separated) — bin/cli.js wires it up
+# from --allowed-origins. Default behavior is unchanged: loopback-only.
+def _cors_origin_regex() -> str:
+    hosts = ["localhost", r"127\.0\.0\.1"]
+    for h in os.environ.get("TT_ALLOWED_ORIGINS", "").split(","):
+        h = h.strip()
+        if h:
+            hosts.append(re.escape(h))
+    return r"^https?://(" + "|".join(hosts) + r"):\d+$"
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"^http://(localhost|127\.0\.0\.1):\d+$",
+    allow_origin_regex=_cors_origin_regex(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -4541,4 +4551,16 @@ if __name__ == "__main__":
             except ValueError: pass
         return 8000
 
-    uvicorn.run(app, host="127.0.0.1", port=_resolve_port())
+    # Host resolution order: --host CLI arg → TT_HOST env var → 127.0.0.1.
+    # Default stays loopback; set 0.0.0.0 (or a specific interface IP) to expose
+    # the API for remote/tailnet access. Pair with TT_ALLOWED_ORIGINS for CORS.
+    def _resolve_host() -> str:
+        argv = sys.argv[1:]
+        for i, arg in enumerate(argv):
+            if arg == "--host" and i + 1 < len(argv):
+                return argv[i + 1]
+            if arg.startswith("--host="):
+                return arg.split("=", 1)[1]
+        return os.environ.get("TT_HOST") or "127.0.0.1"
+
+    uvicorn.run(app, host=_resolve_host(), port=_resolve_port())

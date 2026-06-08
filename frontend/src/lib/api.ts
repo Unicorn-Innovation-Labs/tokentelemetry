@@ -2,8 +2,20 @@
 
 import { useEffect, useState } from "react";
 
-export const API_BASE =
-  process.env.NEXT_PUBLIC_API_BASE?.replace(/\/$/, "") || "http://127.0.0.1:8000";
+// Resolve the backend base URL. An explicit NEXT_PUBLIC_API_BASE wins (pin a
+// fixed host if you want one). Otherwise derive it from the address the
+// dashboard was actually loaded on (window.location) plus the API port — so a
+// single build works on localhost, a LAN IP, or a tailnet host without rebaking
+// the URL. Falls back to loopback during SSR, where window is unavailable.
+export const API_BASE = (() => {
+  const explicit = process.env.NEXT_PUBLIC_API_BASE?.replace(/\/$/, "");
+  if (explicit) return explicit;
+  const port = process.env.NEXT_PUBLIC_API_PORT || "8000";
+  if (typeof window !== "undefined") {
+    return `${window.location.protocol}//${window.location.hostname}:${port}`;
+  }
+  return `http://127.0.0.1:${port}`;
+})();
 
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, init);

@@ -2,6 +2,17 @@
   "releases": [
     {
       "tag": "2026-06-08",
+      "title": "View the dashboard from another device",
+      "highlights": [
+        {
+          "title": "Opt-in remote / tailnet access",
+          "description": "Run TokenTelemetry on a headless box (a home server, a Tailscale tailnet) and open the dashboard from your laptop or phone. Start it with --host 0.0.0.0 and --allowed-origins <your-hosts>; the frontend now figures out where the backend is from the address you loaded it on, so the same setup works over localhost, a LAN IP, or a tailnet name. Default is unchanged: localhost-only.",
+          "href": "/"
+        }
+      ]
+    },
+    {
+      "tag": "2026-06-08",
       "title": "Local model insights: energy, savings & CO₂",
       "highlights": [
         {

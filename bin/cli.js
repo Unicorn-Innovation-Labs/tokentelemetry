@@ -37,7 +37,7 @@ function die(msg) {
 // Accepts --port / --api-port (and -p / -a shorthands), in `--flag value` or
 // `--flag=value` form. Anything unknown triggers the help text.
 function parseArgs(argv) {
-  const out = { frontPort: 3000, apiPort: 8000 };
+  const out = { frontPort: 3000, apiPort: 8000, host: '127.0.0.1', allowedOrigins: '' };
   const take = (i) => {
     if (i + 1 >= argv.length) die(`expected a value after ${argv[i]}`);
     return argv[i + 1];
@@ -54,6 +54,10 @@ function parseArgs(argv) {
     else if (a.startsWith('--port='))          { setPort('frontPort', a.slice('--port='.length)); }
     else if (a === '-a' || a === '--api-port') { setPort('apiPort',   take(i)); i++; }
     else if (a.startsWith('--api-port='))      { setPort('apiPort',   a.slice('--api-port='.length)); }
+    else if (a === '--host')                   { out.host = take(i); i++; }
+    else if (a.startsWith('--host='))          { out.host = a.slice('--host='.length); }
+    else if (a === '--allowed-origins')        { out.allowedOrigins = take(i); i++; }
+    else if (a.startsWith('--allowed-origins=')) { out.allowedOrigins = a.slice('--allowed-origins='.length); }
     else die(`unknown argument: ${a}\nRun with --help for usage.`);
   }
   return out;
@@ -64,14 +68,20 @@ function printHelp() {
     'Usage: tokentelemetry [options]',
     '',
     'Options:',
-    '  -p, --port <N>       Frontend (Next.js) port. Default 3000.',
-    '  -a, --api-port <N>   Backend (FastAPI) port. Default 8000.',
-    '  -h, --help           Show this help.',
+    '  -p, --port <N>            Frontend (Next.js) port. Default 3000.',
+    '  -a, --api-port <N>        Backend (FastAPI) port. Default 8000.',
+    '      --host <ADDR>         Backend bind address. Default 127.0.0.1 (loopback).',
+    '                            Use 0.0.0.0 (or an interface IP) to expose remotely.',
+    '      --allowed-origins <L> Comma-separated hosts allowed to load the dashboard',
+    '                            from another machine (CORS + Next dev origins).',
+    '  -h, --help               Show this help.',
     '',
     'Examples:',
-    '  start.sh                                 # 3000 / 8000',
+    '  start.sh                                 # 3000 / 8000, localhost only',
     '  start.sh --port 4000 --api-port 9000     # custom both',
     '  start.sh -p 4000                         # frontend on 4000, backend stays 8000',
+    '  start.sh --host 0.0.0.0 \\               # expose on a tailnet/LAN',
+    '    --allowed-origins box.tailnet.ts.net,100.64.0.1',
   ].join('\n'));
 }
 
@@ -202,7 +212,7 @@ function ensureFrontend() {
 }
 
 async function start() {
-  const { frontPort, apiPort } = parseArgs(process.argv.slice(2));
+  const { frontPort, apiPort, host, allowedOrigins } = parseArgs(process.argv.slice(2));
 
   console.log('\nTokenTelemetry');
   console.log('--------------');
@@ -214,13 +224,24 @@ async function start() {
   // and the auto-opened browser lands on the wrong URL.
   await ensurePortsFree([frontPort, apiPort]);
 
-  const apiBase = `http://127.0.0.1:${apiPort}`;
+  // Loopback binds display as "localhost"; a specific interface IP shows as-is.
+  const displayHost = (host === '0.0.0.0' || host === '127.0.0.1') ? 'localhost' : host;
+
+  // A concrete (non-wildcard, non-loopback) bind address is itself an origin the
+  // browser loads from, so fold it into the allow-list — `--host <ip>` then just
+  // works without also repeating the ip in --allowed-origins. 0.0.0.0 has no
+  // single hostname to derive, so that case still needs --allowed-origins.
+  const hostIsConcrete = host && !['0.0.0.0', '127.0.0.1', 'localhost'].includes(host);
+  const allowed = [allowedOrigins, hostIsConcrete ? host : ''].filter(Boolean).join(',');
+
   console.log('\n→ launching services…');
-  const backend = spawn(venvPython, ['main.py', '--port', String(apiPort)], {
+  const backend = spawn(venvPython, ['main.py', '--port', String(apiPort), '--host', host], {
     cwd: backendDir,
     stdio: 'inherit',
     // detached on POSIX gives us a process group we can signal as a unit
     detached: !isWindows,
+    // TT_ALLOWED_ORIGINS opts extra hosts into the backend's CORS allowlist.
+    env: { ...process.env, TT_ALLOWED_ORIGINS: allowed },
   });
 
   const frontend = spawn('npm', ['run', 'dev', '--', '--port', String(frontPort)], {
@@ -228,15 +249,22 @@ async function start() {
     stdio: 'inherit',
     shell: true,
     detached: !isWindows,
-    // NEXT_PUBLIC_API_BASE is read by frontend/src/lib/api.ts at startup so the
-    // browser knows where the backend lives. Without this the frontend would
-    // hardcode :8000 and silently 404 every fetch whenever --api-port is used.
-    env: { ...process.env, PORT: String(frontPort), NEXT_PUBLIC_API_BASE: apiBase },
+    // The frontend derives its API base from window.location at runtime (see
+    // frontend/src/lib/api.ts), so it only needs the API *port* — the host
+    // follows whatever address the dashboard was opened on (localhost, LAN IP,
+    // tailnet, …). TT_ALLOWED_ORIGINS feeds Next's allowedDevOrigins so the dev
+    // server serves its chunks to those non-localhost origins.
+    env: {
+      ...process.env,
+      PORT: String(frontPort),
+      NEXT_PUBLIC_API_PORT: String(apiPort),
+      TT_ALLOWED_ORIGINS: allowed,
+    },
   });
 
-  const dashUrl = `http://localhost:${frontPort}`;
+  const dashUrl = `http://${displayHost}:${frontPort}`;
   console.log(`\nDashboard:  ${dashUrl}`);
-  console.log(`API:        ${apiBase}`);
+  console.log(`API:        http://${displayHost}:${apiPort}`);
   console.log('Press Ctrl+C to stop.\n');
 
   // Auto-launch the dashboard once Next.js is actually responding.
