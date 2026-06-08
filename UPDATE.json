@@ -16,6 +16,11 @@
         {
           "title": "Flat subscriptions now show $0 per call",
           "description": "Endpoints you pay for monthly (Ollama Cloud Pro, a proxied gateway) are billed by subscription, not per token. List them as subscription endpoints and their sessions stop inflating your per-call cost totals."
+        },
+        {
+          "title": "Full subscription-cost disclaimer",
+          "description": "The dashboard's \"API equiv. (est.)\" figure used to cut off mid-sentence at \"Subscription users p…\". The disclaimer now shows in full, plus a persistent callout makes clear the number re-prices your usage at API list rates for comparing sessions — it is not an invoice. On a flat-fee plan like Claude Pro/Max or Copilot, your actual spend is much lower.",
+          "href": "/"
         }
       ]
     },

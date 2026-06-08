@@ -120,11 +120,20 @@ export default function Home() {
           <StatTile
             label="API equiv. (est.)"
             value={loading ? <Skeleton className="h-8 w-20" /> : formatCost(totalCost)}
-            hint="Estimated at API list prices. Subscription users pay a flat monthly fee — this is not your actual spend."
+            hint="At API list prices — for comparing sessions, not an invoice."
             icon={<DollarSign size={16} />}
             accent="var(--tt-warn)"
           />
         </div>
+        <p className="mt-3 text-[12px] leading-relaxed text-[var(--tt-fg-muted)]">
+          <span aria-hidden>💡</span>{" "}
+          <span className="font-medium text-[var(--tt-fg)]">On a subscription plan?</span>{" "}
+          The <span className="font-medium text-[var(--tt-fg)]">API equiv.</span> figure above
+          re-prices your usage at API list rates so you can compare sessions — it is{" "}
+          <span className="font-medium text-[var(--tt-fg)]">not</span> a bill. Claude Pro/Max,
+          Copilot and other flat-fee plans charge a fixed monthly price, so your actual spend is
+          much lower.
+        </p>
       </Section>
 
       {/* Connected agents — split into coding vs autonomous */}
