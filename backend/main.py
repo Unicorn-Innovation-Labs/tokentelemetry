@@ -2945,12 +2945,14 @@ def _scan_sessions_sync():
                     model = srow["model"]
                     # Prefer Hermes's own cost (it knows exotic models we may not price)
                     cost = srow["actual_cost_usd"] if srow["actual_cost_usd"] is not None else srow["estimated_cost_usd"]
+                    # Bind before the branch: it's referenced unconditionally in the
+                    # session dict below, but only computed when cost must be derived.
+                    _measured_tps = None
                     if cost is None:
                         # Only when TT has to compute the cost itself AND the session
                         # is local do we parse the agent log for a MEASURED tok/s
                         # (out/latency per call). This keeps the common path cheap —
                         # most Hermes sessions carry their own cost and skip this.
-                        _measured_tps = None
                         try:
                             from power_config import is_local_session
                             if is_local_session(model, srow["billing_base_url"], srow["billing_provider"]):
@@ -2993,8 +2995,8 @@ def _scan_sessions_sync():
                         "cost_anomaly": cost_anomaly,
                         "parent_session_id": srow["parent_session_id"],
                         "end_reason": srow["end_reason"],
-                        "provider": srow.get("billing_provider", None),
-                        "endpoint": srow.get("billing_base_url", None),
+                        "provider": srow["billing_provider"],
+                        "endpoint": srow["billing_base_url"],
                         "tok_per_sec": _measured_tps,
                     })
             finally:
