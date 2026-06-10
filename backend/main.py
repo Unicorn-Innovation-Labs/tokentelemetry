@@ -302,6 +302,21 @@ ANTIGRAVITY_BRAIN_DIRS = [d for d, _ in ANTIGRAVITY_BRAIN_SOURCES]
 ANTIGRAVITY_CLI_DIR = GEMINI_DIR / "antigravity-cli"
 PROJECT_ALIASES_FILE = data_dir() / "aliases.json"
 
+
+def _sqlite_ro_uri(db_path) -> str:
+    """Read-only sqlite URI that works on every OS.
+
+    f"file:{path}" breaks on Windows — backslashes are not URI path
+    separators, so sqlite fails to resolve the file and the scanner silently
+    skips the agent. Forward-slash the path (no-op on POSIX) and
+    percent-encode URI-special characters (spaces, '?', '#'); the drive
+    colon stays literal, which sqlite's Windows URI parser expects.
+    """
+    from urllib.parse import quote
+    p = db_path if hasattr(db_path, "as_posix") else Path(db_path)
+    return "file:" + quote(p.as_posix(), safe="/:") + "?mode=ro"
+
+
 def _load_project_aliases() -> Dict[str, str]:
     # Ensure directory exists
     PROJECT_ALIASES_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -432,7 +447,7 @@ def _antigravity_db_meta(db_path: Path) -> Dict[str, Optional[str]]:
     files: "Counter[str]" = Counter()
     gemini_home = str(GEMINI_DIR)
     try:
-        con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        con = sqlite3.connect(_sqlite_ro_uri(db_path), uri=True)
         try:
             for (blob,) in con.execute("SELECT data FROM gen_metadata WHERE data IS NOT NULL"):
                 if blob:
@@ -523,7 +538,7 @@ def _antigravity_cli_trace(db_path: Path, session_id: str) -> List[Dict[str, Any
     Returns events the existing viewer renders (user / reasoning / tool / tool
     output), or [] when nothing usable is found (caller falls back to brain)."""
     try:
-        con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        con = sqlite3.connect(_sqlite_ro_uri(db_path), uri=True)
     except sqlite3.Error:
         return []
     try:
@@ -803,7 +818,7 @@ def _hermes_memory_io(session_id: str) -> Dict[str, Any]:
     }
     for db_path in _hermes_dbs():
         try:
-            uri = f"file:{db_path}?mode=ro"
+            uri = _sqlite_ro_uri(db_path)
             conn = sqlite3.connect(uri, uri=True, timeout=1.0)
             try:
                 rows = conn.execute(
@@ -2663,7 +2678,7 @@ def _scan_sessions_sync():
     gemini_projects_file = GEMINI_DIR / "projects.json"
     if gemini_projects_file.exists():
         try:
-            with open(gemini_projects_file, "r") as f:
+            with open(gemini_projects_file, "r", encoding="utf-8", errors="replace") as f:
                 pj_data = json.load(f).get("projects", {})
                 gemini_slugs = set(pj_data.values())
                 gemini_slug_to_path = {v: k for k, v in pj_data.items()}
@@ -3011,7 +3026,7 @@ def _scan_sessions_sync():
         if CURSOR_STORAGE.exists():
             for ws in CURSOR_STORAGE.glob("*/workspace.json"):
                 try:
-                    with open(ws, "r") as f:
+                    with open(ws, "r", encoding="utf-8", errors="replace") as f:
                         data = json.load(f)
                         folder = data.get("folder")
                         if folder:
@@ -3119,7 +3134,7 @@ def _scan_sessions_sync():
                 workspace_json = ws_folder.parent / "workspace.json"
                 project_path = "unknown"
                 if workspace_json.exists():
-                    with open(workspace_json, "r") as f:
+                    with open(workspace_json, "r", encoding="utf-8", errors="replace") as f:
                         wj = json.load(f); folder_url = wj.get("folder")
                         if folder_url: project_path = unquote(folder_url.replace("file://", ""))
                 # VS Code ~1.100+ switched session files from <id>.json (single
@@ -3237,7 +3252,7 @@ def _scan_sessions_sync():
     if OPENCODE_DB.exists():
         try:
             # immutable=1 so we don't block the live TUI process's write lock
-            uri = f"file:{OPENCODE_DB}?mode=ro"
+            uri = _sqlite_ro_uri(OPENCODE_DB)
             conn = sqlite3.connect(uri, uri=True, timeout=1.0)
             conn.row_factory = sqlite3.Row
             try:
@@ -3390,7 +3405,7 @@ def _scan_sessions_sync():
     hermes_by_id: Dict[str, Dict[str, Any]] = {}
     for db_path in _hermes_dbs():
         try:
-            uri = f"file:{db_path}?mode=ro"
+            uri = _sqlite_ro_uri(db_path)
             conn = sqlite3.connect(uri, uri=True, timeout=1.0)
             conn.row_factory = sqlite3.Row
             try:
@@ -4042,7 +4057,7 @@ async def get_session_detail(session_id: str, agent: str):
         return events
     elif agent == "opencode":
         if not OPENCODE_DB.exists(): return {"error": "Not found"}
-        uri = f"file:{OPENCODE_DB}?mode=ro"
+        uri = _sqlite_ro_uri(OPENCODE_DB)
         conn = sqlite3.connect(uri, uri=True, timeout=1.0)
         conn.row_factory = sqlite3.Row
         try:
@@ -4084,7 +4099,7 @@ async def get_session_detail(session_id: str, agent: str):
     elif agent == "hermes":
         for db_path in _hermes_dbs():
             try:
-                uri = f"file:{db_path}?mode=ro"
+                uri = _sqlite_ro_uri(db_path)
                 conn = sqlite3.connect(uri, uri=True, timeout=1.0)
                 conn.row_factory = sqlite3.Row
                 try:
@@ -4198,7 +4213,7 @@ async def session_delegation(session_id: str, agent: str):
         if not OPENCODE_DB.exists():
             return {"error": "Not found"}
         try:
-            conn = sqlite3.connect(f"file:{OPENCODE_DB}?mode=ro", uri=True, timeout=1.0)
+            conn = sqlite3.connect(_sqlite_ro_uri(OPENCODE_DB), uri=True, timeout=1.0)
             try:
                 cols = {r[1] for r in conn.execute("PRAGMA table_info(session)")}
                 if "parent_id" not in cols:
@@ -4220,7 +4235,7 @@ async def session_delegation(session_id: str, agent: str):
     if agent == "hermes":
         for db_path in _hermes_dbs():
             try:
-                conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=1.0)
+                conn = sqlite3.connect(_sqlite_ro_uri(db_path), uri=True, timeout=1.0)
                 try:
                     row = conn.execute("SELECT parent_session_id FROM sessions WHERE id=?", (session_id,)).fetchone()
                     if row is None:

@@ -105,6 +105,19 @@ def make_claude_tree(claude_dir: Path, sid: str = SID, with_subagents: bool = Tr
 
 # --- helper unit tests ------------------------------------------------------
 
+def test_sqlite_ro_uri_cross_platform():
+    from pathlib import PurePosixPath, PureWindowsPath
+    # POSIX: byte-identical to the old f"file:{path}?mode=ro" for plain paths.
+    assert main._sqlite_ro_uri(PurePosixPath("/home/u/.hermes/state.db")) == \
+        "file:/home/u/.hermes/state.db?mode=ro"
+    # Windows: backslashes are NOT URI separators — must be forward-slashed,
+    # drive colon kept literal (sqlite's Windows URI parser expects C:/...).
+    assert main._sqlite_ro_uri(PureWindowsPath(r"C:\Users\u\state.db")) == \
+        "file:C:/Users/u/state.db?mode=ro"
+    # URI-special characters get percent-encoded (spaces, '?', '#').
+    assert main._sqlite_ro_uri(PurePosixPath("/data/My Files/a?b.db")) == \
+        "file:/data/My%20Files/a%3Fb.db?mode=ro"
+
 def test_helper_none_without_subagents(tmp_path):
     sf = make_claude_tree(tmp_path / ".claude", with_subagents=False)
     assert main._claude_subagent_usage(sf, SID) is None
