@@ -1975,6 +1975,56 @@ def _opencode_resolve_model(val):
 # usage fields); opencode/hermes: parent/child linkage between real sessions.
 _DELEGATION_CAPABLE_AGENTS = {"claude", "cursor", "opencode", "hermes"}
 
+# Skill / slash-command invocations (Claude Code). Two structured signals:
+#   - assistant tool_use named "Skill" with input.skill = "<name>";
+#   - <command-name>/<name></command-name> tags echoed into user lines.
+# The tag also fires for built-in CLI commands (/model, /usage, ...) which are
+# NOT skills — counting those would drown real skill usage in noise.
+_COMMAND_NAME_RE = re.compile(r"<command-name>/?([\w.:-]+)</command-name>")
+_BUILTIN_CLI_COMMANDS = {
+    "add-dir", "agents", "bashes", "bug", "clear", "compact", "config",
+    "context", "cost", "doctor", "exit", "export", "fast", "help", "hooks",
+    "ide", "install-github-app", "login", "logout", "mcp", "memory",
+    "migrate-installer", "model", "output-style", "permissions", "plan", "plugin",
+    "privacy-settings", "quit", "release-notes", "resume", "rewind", "status",
+    "statusline", "terminal-setup", "theme", "todos", "upgrade", "usage", "vim",
+}
+
+
+def _count_tool(tool_counts: Dict[str, int], name) -> None:
+    if name:
+        tool_counts[name] = tool_counts.get(name, 0) + 1
+
+
+def _mcp_usage_from_counts(tool_counts: Dict[str, int]) -> Dict[str, Dict[str, int]]:
+    """Group mcp__<server>__<tool> call counts by server. Non-MCP names skipped."""
+    out: Dict[str, Dict[str, int]] = {}
+    for name, n in tool_counts.items():
+        if not isinstance(name, str) or not name.startswith("mcp__"):
+            continue
+        parts = name.split("__", 2)
+        if len(parts) < 3 or not parts[1] or not parts[2]:
+            continue
+        server = out.setdefault(parts[1], {})
+        server[parts[2]] = server.get(parts[2], 0) + n
+    return out
+
+
+def _attach_tool_usage(sess: Dict[str, Any], tool_counts: Dict[str, int],
+                       skill_counts: Optional[Dict[str, int]] = None) -> None:
+    """Attach tool_counts / mcp_usage / skills_used to a session dict (only when
+    non-empty, so agents without the signal simply lack the keys)."""
+    if tool_counts:
+        sess["tool_counts"] = tool_counts
+        mcp = _mcp_usage_from_counts(tool_counts)
+        if mcp:
+            sess["mcp_usage"] = mcp
+    if skill_counts:
+        sess["skills_used"] = [
+            {"name": k, "count": v}
+            for k, v in sorted(skill_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+        ]
+
 
 def _claude_subagent_usage(session_file: Path, sid: str) -> Optional[Dict[str, Any]]:
     """Roll up subagent (Task/Agent tool) usage for one Claude Code session.
@@ -2065,13 +2115,19 @@ def _claude_subagent_usage(session_file: Path, sid: str) -> Optional[Dict[str, A
         return None
     totals = {"input": 0, "output": 0, "cached": 0, "cache_creation": 0,
               "cache_creation_1h": 0, "total": 0}
+    by_type: Dict[str, Dict[str, Any]] = {}
     for e in entries:
         for k in totals:
             totals[k] += e["tokens"][k]
+        bt = by_type.setdefault(e["agent_type"], {"count": 0, "total": 0, "cost": 0.0})
+        bt["count"] += 1
+        bt["total"] += e["tokens"]["total"]
+        bt["cost"] = round(bt["cost"] + (e["cost"] or 0), 6)
     return {
         "spawn_count": len(entries),
         "subagents": entries,
         "totals": totals,
+        "by_type": by_type,
         "cost": round(sum(e["cost"] or 0 for e in entries), 6),
     }
 
@@ -2189,6 +2245,8 @@ def _scan_sessions_sync():
 
                 # pending_edit_tool_ids: Set[str] = set()  # quality signals (commented out)
                 # prior_edit_failed = False
+                tool_counts: Dict[str, int] = {}
+                skill_counts: Dict[str, int] = {}
                 try:
                     with open(session_file, "r", encoding="utf-8", errors="replace") as f:
                         for line in f:
@@ -2219,6 +2277,11 @@ def _scan_sessions_sync():
                                     if item.get("type") == "tool_use":
                                         tool = item.get("name")
                                         if tool not in sess["mcp_tools"]: sess["mcp_tools"].append(tool)
+                                        _count_tool(tool_counts, tool)
+                                        if tool == "Skill":
+                                            skill = (item.get("input") or {}).get("skill")
+                                            if skill:
+                                                skill_counts[skill] = skill_counts.get(skill, 0) + 1
                                         if tool == "ExitPlanMode":
                                             plan_text = (item.get("input") or {}).get("plan") or ""
                                             if plan_text:
@@ -2241,6 +2304,11 @@ def _scan_sessions_sync():
                                 u_content = u_msg.get("content", "")
                                 if "/plan" in str(u_content):
                                     sess["has_plan"] = True
+                                # Slash-command echoes: count skill invocations,
+                                # skip built-in CLI commands (/model, /usage, ...).
+                                for cmd in _COMMAND_NAME_RE.findall(str(u_content)):
+                                    if cmd not in _BUILTIN_CLI_COMMANDS:
+                                        skill_counts[cmd] = skill_counts.get(cmd, 0) + 1
                                 # Quality signals (retry chain tracking) commented out:
                                 # if isinstance(u_content, list):
                                 #     for it in u_content:
@@ -2251,6 +2319,7 @@ def _scan_sessions_sync():
                                 #     prior_edit_failed = False
                                 #     pending_edit_tool_ids = set()
                 except Exception: continue
+                _attach_tool_usage(sess, tool_counts, skill_counts)
                 # Subagent (Task/Agent) rollup — separate "delegated" bucket so the
                 # parent's own token fields stay exactly as before. Full per-subagent
                 # breakdown is served by /sessions/{id}/delegation, the list carries
@@ -2263,6 +2332,7 @@ def _scan_sessions_sync():
                     "delegated_total": deleg["totals"]["total"] if deleg else 0,
                 }
                 if deleg:
+                    sess["delegation"]["by_type"] = deleg["by_type"]
                     sess["tokens"]["delegated_input"] = deleg["totals"]["input"]
                     sess["tokens"]["delegated_output"] = deleg["totals"]["output"]
                     sess["tokens"]["delegated_cached"] = deleg["totals"]["cached"]
@@ -2357,6 +2427,7 @@ def _scan_sessions_sync():
                                 if data.get("payload", {}).get("type") == "function_call":
                                     tool = data["payload"].get("name")
                                     if tool not in sess["mcp_tools"]: sess["mcp_tools"].append(tool)
+                                    _count_tool(sess.setdefault("tool_counts", {}), tool)
                                     if tool == "update_plan":
                                         try:
                                             args = json.loads(data["payload"].get("arguments") or "{}")
@@ -2391,6 +2462,9 @@ def _scan_sessions_sync():
             if not s.get("model") and s.get("_provider"):
                 s["model"] = s["_provider"]
             s.pop("_provider", None)
+            mcp = _mcp_usage_from_counts(s.get("tool_counts") or {})
+            if mcp:
+                s["mcp_usage"] = mcp
         sessions.extend(codex_sessions.values())
 
     # 3 & 7. Gemini & Antigravity
@@ -2455,6 +2529,7 @@ def _scan_sessions_sync():
                                 ts = _aware(datetime.fromisoformat(data.get("lastUpdated").replace('Z', '+00:00'))) if data.get("lastUpdated") else _file_mtime_utc(cf)
                                 tokens = {"input": 0, "output": 0, "cached": 0, "total": 0}
                                 mcp_tools = []; has_plan = False; first_msg = ""; plans = []
+                                tool_counts: Dict[str, int] = {}
                                 has_user = False
                                 for msg in data.get("messages", []):
                                     if msg.get("type") == "user":
@@ -2469,6 +2544,7 @@ def _scan_sessions_sync():
                                     if "toolCalls" in msg:
                                         for tc in msg["toolCalls"]:
                                             if tc.get("name") not in mcp_tools: mcp_tools.append(tc.get("name"))
+                                            _count_tool(tool_counts, tc.get("name"))
                                             if tc.get("name") == "exit_plan_mode":
                                                 plan_text = ""
                                                 pp = (tc.get("args") or {}).get("plan_path")
@@ -2506,7 +2582,9 @@ def _scan_sessions_sync():
                                 tokens["cost"] = calculate_cost(model, tokens["input"], tokens["output"], tokens["cached"])
                                 if sid in _seen_antigravity: continue
                                 _seen_antigravity.add(sid)
-                                sessions.append({"id": sid, "agent": effective_agent, "project": project_path, "timestamp": ts, "display": first_msg[:100], "tokens": tokens, "mcp_tools": mcp_tools, "has_plan": has_plan, "plans": plans, "model": model, "artifacts": artifacts, "antigravity_source": _ag_surface.get(sid), "cost": tokens["cost"]})
+                                _g_sess = {"id": sid, "agent": effective_agent, "project": project_path, "timestamp": ts, "display": first_msg[:100], "tokens": tokens, "mcp_tools": mcp_tools, "has_plan": has_plan, "plans": plans, "model": model, "artifacts": artifacts, "antigravity_source": _ag_surface.get(sid), "cost": tokens["cost"]}
+                                _attach_tool_usage(_g_sess, tool_counts)
+                                sessions.append(_g_sess)
                         except Exception: continue
                 # Scan logs.json for Antigravity sessions that have no chat JSON file
                 _logs_file = tmp_dir / "logs.json"
@@ -2665,7 +2743,7 @@ def _scan_sessions_sync():
                         sid = cf.stem; mcp_tools = []; has_plan = False; first_msg = ""; plans = []
                         tokens = {"input": 0, "output": 0, "cached": 0, "total": 0}
                         project_path = "unknown"; last_ts = _file_mtime_utc(cf); model = None
-                        artifacts = []
+                        artifacts = []; tool_counts = {}
                         with open(cf, "r", encoding="utf-8", errors="replace") as f:
                             for line in f:
                                 try:
@@ -2692,6 +2770,7 @@ def _scan_sessions_sync():
                                         for item in data.get("message", {}).get("content", []):
                                             if item.get("type") == "tool_use":
                                                 if item.get("name") not in mcp_tools: mcp_tools.append(item.get("name"))
+                                                _count_tool(tool_counts, item.get("name"))
                                             if item.get("type") == "thinking":
                                                 t_text = item.get("thinking", "")
                                                 if "plan" in t_text.lower() and len(t_text) > 100:
@@ -2700,7 +2779,9 @@ def _scan_sessions_sync():
                                 except Exception: continue
                         tokens["total"] = tokens["input"] + tokens["output"] + tokens["cached"]
                         tokens["cost"] = calculate_cost(model, tokens["input"], tokens["output"], tokens["cached"], cache_creation_tokens=tokens.get("cache_creation", 0), cache_creation_1h_tokens=tokens.get("cache_creation_1h", 0))
-                        sessions.append({"id": sid, "agent": "qwen", "project": project_path, "timestamp": last_ts, "display": first_msg[:100], "tokens": tokens, "mcp_tools": mcp_tools, "has_plan": has_plan, "plans": plans, "model": model, "artifacts": artifacts, "cost": tokens["cost"]})
+                        _q_sess = {"id": sid, "agent": "qwen", "project": project_path, "timestamp": last_ts, "display": first_msg[:100], "tokens": tokens, "mcp_tools": mcp_tools, "has_plan": has_plan, "plans": plans, "model": model, "artifacts": artifacts, "cost": tokens["cost"]}
+                        _attach_tool_usage(_q_sess, tool_counts)
+                        sessions.append(_q_sess)
                     except Exception: continue
 
     # 5. Vibe
@@ -2767,6 +2848,7 @@ def _scan_sessions_sync():
                                 first_msg = ""
                                 tokens = {"input": 0, "output": 0, "cached": 0, "total": 0}
                                 mcp_tools = []
+                                tool_counts = {}
                                 subagents = []
                                 has_plan = False
                                 plans = []
@@ -2800,6 +2882,7 @@ def _scan_sessions_sync():
                                                 if item.get("type") == "tool_use":
                                                     name = item.get("name")
                                                     if name not in mcp_tools: mcp_tools.append(name)
+                                                    _count_tool(tool_counts, name)
                                                     if name == "Subagent":
                                                         sub_input = item.get("input") or {}
                                                         sub_name = sub_input.get("name") or sub_input.get("subagent_type")
@@ -2821,7 +2904,9 @@ def _scan_sessions_sync():
                                 except Exception: pass
                                 delegation = {"supported": True, "tokens_recorded": False,
                                               "spawn_count": max(spawn_count, len(subagents))}
-                                sessions.append({"id": sid, "agent": "cursor", "project": project_path, "timestamp": mtime, "display": first_msg[:100], "tokens": tokens, "mcp_tools": mcp_tools, "subagents": subagents, "has_plan": has_plan, "plans": plans, "model": model, "artifacts": artifacts, "cost": tokens["cost"], "delegation": delegation})
+                                _c_sess = {"id": sid, "agent": "cursor", "project": project_path, "timestamp": mtime, "display": first_msg[:100], "tokens": tokens, "mcp_tools": mcp_tools, "subagents": subagents, "has_plan": has_plan, "plans": plans, "model": model, "artifacts": artifacts, "cost": tokens["cost"], "delegation": delegation}
+                                _attach_tool_usage(_c_sess, tool_counts)
+                                sessions.append(_c_sess)
                             except Exception: continue
 
     # 7. Copilot
@@ -2979,6 +3064,7 @@ def _scan_sessions_sync():
                     models_used: List[str] = []   # distinct models, in first-seen order (#39)
                     first_user = ""
                     mcp_tools: List[str] = []
+                    oc_tool_counts: Dict[str, int] = {}
                     has_plan = False
                     plans: List[Dict[str, Any]] = []
                     # Model + tokens from assistant messages
@@ -3041,6 +3127,7 @@ def _scan_sessions_sync():
                         if ptype == "tool":
                             tname = pdata.get("tool")
                             if tname and tname not in mcp_tools: mcp_tools.append(tname)
+                            _count_tool(oc_tool_counts, tname)
                         if ptype == "step-finish":
                             tk = pdata.get("tokens") or {}
                             cache = tk.get("cache") or {}
@@ -3072,6 +3159,7 @@ def _scan_sessions_sync():
                     if _has_parent and srow["parent_id"]:
                         oc_sess["parent_session_id"] = srow["parent_id"]
                         oc_parent_of[sid] = srow["parent_id"]
+                    _attach_tool_usage(oc_sess, oc_tool_counts)
                     oc_by_id[sid] = oc_sess
                     sessions.append(oc_sess)
                 # Annotate parents with their children (display-only; child tokens
@@ -3172,11 +3260,13 @@ def _scan_sessions_sync():
                     if fu:
                         first_user = fu["content"] or ""
                     display = (srow["title"] or first_user)[:100]
-                    # Distinct tool names used in this session
-                    mcp_tools = [r[0] for r in conn.execute(
-                        "SELECT DISTINCT tool_name FROM messages "
-                        "WHERE session_id=? AND tool_name IS NOT NULL AND tool_name != ''",
-                        (sid,)).fetchall()]
+                    # Tool names + call counts used in this session
+                    h_tool_counts = {r[0]: r[1] for r in conn.execute(
+                        "SELECT tool_name, COUNT(*) FROM messages "
+                        "WHERE session_id=? AND tool_name IS NOT NULL AND tool_name != '' "
+                        "GROUP BY tool_name",
+                        (sid,)).fetchall()}
+                    mcp_tools = list(h_tool_counts.keys())
                     cwd = hermes_cwd_map.get(sid)
                     hermes_by_id[sid] = {
                         "id": sid, "agent": "hermes",
@@ -3193,6 +3283,7 @@ def _scan_sessions_sync():
                         "endpoint": srow["billing_base_url"],
                         "tok_per_sec": _measured_tps,
                     }
+                    _attach_tool_usage(hermes_by_id[sid], h_tool_counts)
                     sessions.append(hermes_by_id[sid])
             finally:
                 conn.close()
@@ -4271,10 +4362,50 @@ async def get_analytics():
     total_input = sum(a["input"] for a in by_agent.values())
     total_output = sum(a["output"] for a in by_agent.values())
     total_cached = sum(a["cached"] for a in by_agent.values())
+
+    # Ecosystem usage: skills, MCP servers, subagent types. New keys only — the
+    # existing by_agent/by_day/by_model/total stay byte-identical (no silent
+    # historical changes). Delegated usage is exposed as its OWN bucket, never
+    # folded into the per-agent sums: claude subagent transcripts aren't
+    # sessions (counted nowhere else), while opencode/hermes children already
+    # appear as sessions above — adding parent-side sums would double-count.
+    by_skill: Dict[str, Dict[str, Any]] = {}
+    by_mcp_server: Dict[str, Dict[str, Any]] = {}
+    by_subagent_type: Dict[str, Dict[str, Any]] = {}
+    delegation_totals = {"delegated_tokens": 0, "delegated_cost": 0.0,
+                         "sessions_with_spawns": 0}
+    for s in sessions:
+        for sk in s.get("skills_used") or []:
+            row = by_skill.setdefault(sk["name"], {"invocations": 0, "session_count": 0})
+            row["invocations"] += sk["count"]
+            row["session_count"] += 1
+        for server, tools in (s.get("mcp_usage") or {}).items():
+            row = by_mcp_server.setdefault(server, {"calls": 0, "tools": {}, "session_count": 0})
+            row["session_count"] += 1
+            for tool, n in tools.items():
+                row["calls"] += n
+                row["tools"][tool] = row["tools"].get(tool, 0) + n
+        deleg = s.get("delegation") or {}
+        for t, d in (deleg.get("by_type") or {}).items():
+            row = by_subagent_type.setdefault(t, {"spawns": 0, "tokens": 0, "cost": 0.0, "session_count": 0})
+            row["spawns"] += d.get("count", 0)
+            row["tokens"] += d.get("total", 0)
+            row["cost"] = round(row["cost"] + (d.get("cost") or 0), 6)
+            row["session_count"] += 1
+        if deleg.get("tokens_recorded") and deleg.get("delegated_total"):
+            delegation_totals["delegated_tokens"] += deleg["delegated_total"]
+            delegation_totals["delegated_cost"] = round(
+                delegation_totals["delegated_cost"] + (s.get("delegated_cost") or 0), 6)
+            delegation_totals["sessions_with_spawns"] += 1
+
     return {
         "by_agent": by_agent,
         "by_day": sorted_days,
         "by_model": by_model,
+        "by_skill": by_skill,
+        "by_mcp_server": by_mcp_server,
+        "by_subagent_type": by_subagent_type,
+        "delegation": delegation_totals,
         "total": {
             "input": total_input,
             "output": total_output,

@@ -119,12 +119,16 @@ hermes return `parent_session_id` + `child_session_ids`; unsupported agents
 `session_delegation()` in `backend/main.py`; tests in
 `backend/test_delegation.py`.
 
-Phase 2 (per session): `skills_used: [{name, count}]` (from `Skill` tool_use
-`input.skill` + `<command-name>` tags in user lines — filter out built-in CLI
-commands like /model, /usage which also emit the tag), and
-`mcp_usage: {server: {tool: count}}` parsed from `mcp__<server>__<tool>` names
-(Grok: `signals.json.toolsUsed[]`; Copilot/Vibe/Antigravity: unsupported).
-`/analytics`: `by_skill`, `by_mcp_server`, `by_subagent_type`.
+Phase 2 (IMPLEMENTED): per session, `skills_used: [{name, count}]` (claude:
+`Skill` tool_use `input.skill` + `<command-name>` tags in user lines, built-in
+CLI commands like /model and /plan filtered via `_BUILTIN_CLI_COMMANDS`),
+`tool_counts: {name: n}` (claude/codex/gemini/qwen/cursor/opencode/hermes) and
+`mcp_usage: {server: {tool: n}}` derived from `mcp__<server>__<tool>` names.
+Claude's `delegation` gains `by_type: {agent_type: {count, total, cost}}`.
+`/analytics` adds `by_skill`, `by_mcp_server`, `by_subagent_type`, and a
+`delegation` totals bucket — all NEW keys; existing aggregates byte-identical
+(delegated usage exposed separately, never folded in). Copilot/Vibe/
+Antigravity/Grok carry no per-call tool signal → keys simply absent.
 
 ## 4. Edge cases
 

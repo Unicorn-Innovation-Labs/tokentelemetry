@@ -32,17 +32,22 @@ def _jl(**kw) -> str:
 
 
 def _assistant_line(model="claude-opus-4-8", inp=0, out=0, cache_read=0,
-                    cache_creation=0, cache_creation_1h=0, attribution=None):
+                    cache_creation=0, cache_creation_1h=0, attribution=None,
+                    content=None):
     usage = {
         "input_tokens": inp, "output_tokens": out,
         "cache_read_input_tokens": cache_read,
         "cache_creation_input_tokens": cache_creation,
         "cache_creation": {"ephemeral_1h_input_tokens": cache_creation_1h},
     }
-    line = {"type": "assistant", "message": {"model": model, "usage": usage, "content": []}}
+    line = {"type": "assistant", "message": {"model": model, "usage": usage, "content": content or []}}
     if attribution:
         line["attributionAgent"] = attribution
     return json.dumps(line) + "\n"
+
+
+def _tool_use(name, **input_kw):
+    return {"type": "tool_use", "name": name, "id": "toolu_x", "input": input_kw}
 
 
 def make_claude_tree(claude_dir: Path, sid: str = SID, with_subagents: bool = True) -> Path:
@@ -52,7 +57,18 @@ def make_claude_tree(claude_dir: Path, sid: str = SID, with_subagents: bool = Tr
     session_file = proj / f"{sid}.jsonl"
     session_file.write_text(
         _jl(type="user", cwd="/tmp/proj", message={"role": "user", "content": "hi"})
-        + _assistant_line(inp=100, out=50, cache_read=1000, cache_creation=200),
+        + _assistant_line(inp=100, out=50, cache_read=1000, cache_creation=200,
+                          content=[_tool_use("Bash"), _tool_use("Bash"),
+                                   _tool_use("mcp__chrome__navigate"),
+                                   _tool_use("mcp__chrome__navigate"),
+                                   _tool_use("mcp__chrome__navigate"),
+                                   _tool_use("Skill", skill="graphify"),
+                                   _tool_use("Skill", skill="graphify")])
+        # Slash-command echoes: a real skill (counted) and a built-in (filtered).
+        + _jl(type="user", message={"role": "user", "content":
+              "<command-name>/code-review</command-name><command-args>high</command-args>"})
+        + _jl(type="user", message={"role": "user", "content":
+              "<command-name>/model</command-name>"}),
         encoding="utf-8",
     )
     if not with_subagents:
@@ -170,9 +186,14 @@ def test_scan_claude_delegation_summary(scan_env):
     sessions = [s for s in main._scan_sessions_sync() if s["agent"] == "claude"]
     assert len(sessions) == 1
     s = sessions[0]
-    assert s["delegation"] == {"supported": True, "tokens_recorded": True,
-                               "spawn_count": 3,
-                               "delegated_total": (30 + 7 + 1) + (10 + 3 + 2) + (300 + 40)}
+    d = s["delegation"]
+    assert d["supported"] is True and d["tokens_recorded"] is True
+    assert d["spawn_count"] == 3
+    assert d["delegated_total"] == (30 + 7 + 1) + (10 + 3 + 2) + (300 + 40)
+    # Per-type rollup for analytics: Explore file = 30+10+300 tokens.
+    assert d["by_type"]["Explore"] == {"count": 1, "total": 340,
+                                       "cost": d["by_type"]["Explore"]["cost"]}
+    assert set(d["by_type"]) == {"Explore", "general-purpose", "unknown"}
     assert s["tokens"]["delegated_input"] == 38
     assert s["tokens"]["delegated_output"] == 15
     assert s["tokens"]["delegated_cached"] == 340
@@ -282,6 +303,82 @@ def test_scan_hermes_hierarchy(scan_env):
     assert by_id["h_parent"]["child_session_ids"] == ["h_child"]
     assert by_id["h_parent"]["delegation"]["linked_children"] == 1
     assert by_id["h_child"]["delegation"] == {"supported": True}
+
+
+# --- skills + MCP usage (Phase 2) -------------------------------------------
+
+def test_mcp_usage_from_counts_parses_and_skips_malformed():
+    out = main._mcp_usage_from_counts({
+        "mcp__chrome__navigate": 3,
+        "mcp__chrome__read_page": 1,
+        "mcp__jira__search": 2,
+        "Bash": 9,             # not MCP
+        "mcp__": 1,            # malformed
+        "mcp__only-server": 1, # malformed (no tool)
+    })
+    assert out == {"chrome": {"navigate": 3, "read_page": 1},
+                   "jira": {"search": 2}}
+
+
+def test_scan_claude_skills_and_mcp(scan_env):
+    make_claude_tree(scan_env / ".claude")
+    s = [s for s in main._scan_sessions_sync() if s["agent"] == "claude"][0]
+    # Skill tool ×2 + /code-review echo; /model is a built-in CLI command → filtered.
+    assert s["skills_used"] == [{"name": "graphify", "count": 2},
+                                {"name": "code-review", "count": 1}]
+    assert s["tool_counts"]["Bash"] == 2
+    assert s["tool_counts"]["mcp__chrome__navigate"] == 3
+    assert s["tool_counts"]["Skill"] == 2
+    assert s["mcp_usage"] == {"chrome": {"navigate": 3}}
+
+
+def test_scan_agents_without_signal_lack_keys(scan_env):
+    make_claude_tree(scan_env / ".claude", with_subagents=False)
+    _make_hermes_db(scan_env / "hermes-state.db")
+    for s in main._scan_sessions_sync():
+        if s["agent"] == "hermes":
+            # fixture has no tool messages → no invented usage keys
+            assert "mcp_usage" not in s and "tool_counts" not in s
+
+
+# --- /analytics ecosystem aggregates -----------------------------------------
+
+def test_analytics_ecosystem_aggregates(monkeypatch):
+    from datetime import datetime, timezone
+    base = {"project": "/tmp/x", "timestamp": datetime.now(timezone.utc),
+            "tokens": {"input": 10, "output": 5, "cached": 0, "total": 15},
+            "cost": 0.01, "model": "claude-opus-4-8", "mcp_tools": []}
+    sessions = [
+        {**base, "id": "a", "agent": "claude",
+         "skills_used": [{"name": "graphify", "count": 2}],
+         "mcp_usage": {"chrome": {"navigate": 3}},
+         "delegation": {"supported": True, "tokens_recorded": True, "spawn_count": 2,
+                        "delegated_total": 500,
+                        "by_type": {"Explore": {"count": 2, "total": 500, "cost": 0.2}}},
+         "delegated_cost": 0.2},
+        {**base, "id": "b", "agent": "claude",
+         "skills_used": [{"name": "graphify", "count": 1}],
+         "mcp_usage": {"chrome": {"navigate": 1, "find": 2}},
+         "delegation": {"supported": True, "tokens_recorded": True, "spawn_count": 0,
+                        "delegated_total": 0}},
+        {**base, "id": "c", "agent": "codex", "delegation": {"supported": False}},
+    ]
+
+    async def fake_sessions(fresh: bool = False):
+        return sessions
+
+    monkeypatch.setattr(main, "get_sessions_cached", fake_sessions)
+    a = _run(main.get_analytics())
+    assert a["by_skill"] == {"graphify": {"invocations": 3, "session_count": 2}}
+    assert a["by_mcp_server"] == {"chrome": {"calls": 6, "session_count": 2,
+                                             "tools": {"navigate": 4, "find": 2}}}
+    assert a["by_subagent_type"] == {"Explore": {"spawns": 2, "tokens": 500,
+                                                 "cost": 0.2, "session_count": 1}}
+    assert a["delegation"] == {"delegated_tokens": 500, "delegated_cost": 0.2,
+                               "sessions_with_spawns": 1}
+    # Existing aggregates unchanged in shape: delegated usage NOT folded in.
+    assert a["by_agent"]["claude"]["total"] == 30
+    assert a["total"]["total"] == 45
 
 
 # --- /sessions/{id}/delegation endpoint -------------------------------------
