@@ -381,6 +381,148 @@ def test_analytics_ecosystem_aggregates(monkeypatch):
     assert a["total"]["total"] == 45
 
 
+# --- grok / codex / antigravity (probe-verified shapes) ----------------------
+
+GROK_PARENT = "019eb056-455f-7442-bf79-000000000001"
+GROK_CHILD = "019eb056-646a-7a03-b3f7-000000000002"
+
+
+def _make_grok_tree(root: Path):
+    """Bucket with a parent session that spawned one subagent (child is a full
+    sibling session dir) — mirrors grok 0.2.39 on-disk layout."""
+    bucket = root / "%2Ftmp%2Fx"
+    for sid, ctx in ((GROK_PARENT, 200), (GROK_CHILD, 100)):
+        d = bucket / sid
+        d.mkdir(parents=True)
+        (d / "summary.json").write_text(json.dumps({
+            "created_at": "2026-06-10T07:00:00Z", "updated_at": "2026-06-10T07:01:00Z",
+            "generated_title": f"sess {sid[:6]}", "current_model_id": "grok-build",
+            "info": {"cwd": "/tmp/x"}}))
+        (d / "signals.json").write_text(json.dumps({
+            "contextTokensUsed": ctx, "toolsUsed": ["read_file"],
+            "modelsUsed": ["grok-build"]}))
+    sub = bucket / GROK_PARENT / "subagents" / GROK_CHILD
+    sub.mkdir(parents=True)
+    (sub / "meta.json").write_text(json.dumps({
+        "subagent_id": GROK_CHILD, "parent_session_id": GROK_PARENT,
+        "child_session_id": GROK_CHILD, "subagent_type": "general-purpose",
+        "description": "Summarize README", "status": "completed",
+        "duration_ms": 5898, "tool_calls": 1, "turns": 1,
+        "effective_model_id": "grok-build"}))
+
+
+def test_scan_grok_delegation(scan_env, monkeypatch):
+    monkeypatch.setattr(main, "GROK_SESSIONS_DIR", scan_env / "grok-sessions")
+    _make_grok_tree(scan_env / "grok-sessions")
+    by_id = {s["id"]: s for s in main._scan_sessions_sync() if s["agent"] == "grok"}
+    assert by_id[GROK_PARENT]["delegation"] == {
+        "supported": True, "tokens_recorded": False, "spawn_count": 1,
+        "by_type": {"general-purpose": {"count": 1}}}
+    assert by_id[GROK_PARENT]["child_session_ids"] == [GROK_CHILD]
+    assert by_id[GROK_CHILD]["parent_session_id"] == GROK_PARENT
+    # Children stand alone token-wise (count-once).
+    assert by_id[GROK_CHILD]["tokens"]["total"] == 100
+    assert by_id[GROK_PARENT]["tokens"]["total"] == 200
+
+
+def test_endpoint_grok(scan_env, monkeypatch):
+    monkeypatch.setattr(main, "GROK_SESSIONS_DIR", scan_env / "grok-sessions")
+    _make_grok_tree(scan_env / "grok-sessions")
+    r = _run(main.session_delegation(GROK_PARENT, "grok"))
+    assert r["spawn_count"] == 1
+    assert r["subagents"][0]["description"] == "Summarize README"
+    assert r["subagents"][0]["child_session_id"] == GROK_CHILD
+    # Child resolves its parent via the parent's spawn meta.
+    r = _run(main.session_delegation(GROK_CHILD, "grok"))
+    assert r["parent_session_id"] == GROK_PARENT and r["spawn_count"] == 0
+
+
+CODEX_PARENT = "019eb056-4eae-7280-8617-000000000001"
+CODEX_CHILD = "019eb056-83a6-7fe0-99ce-000000000002"
+
+
+def _make_codex_tree(codex_dir: Path):
+    """Two rollouts, NO session_index.jsonl (codex stopped maintaining it):
+    parent (thread_source user) + subagent child with thread_spawn meta."""
+    day = codex_dir / "sessions" / "2026" / "06" / "10"
+    day.mkdir(parents=True)
+
+    def meta(sid, extra):
+        return json.dumps({"timestamp": "2026-06-10T07:01:46.921Z", "type": "session_meta",
+                           "payload": {"id": sid, "timestamp": "2026-06-10T07:01:46.798Z",
+                                       "cwd": "/tmp/x", "model_provider": "openai",
+                                       "cli_version": "0.136.0", **extra}}) + "\n"
+
+    usage = json.dumps({"timestamp": "2026-06-10T07:01:50.000Z", "type": "event_msg",
+                        "payload": {"type": "token_count",
+                                    "info": {"total_token_usage": {"input_tokens": 50,
+                                             "cached_input_tokens": 0, "output_tokens": 20,
+                                             "total_tokens": 70}}}}) + "\n"
+    prompt = json.dumps({"timestamp": "2026-06-10T07:01:47.000Z", "type": "event_msg",
+                         "payload": {"type": "user_message", "message": "probe prompt"}}) + "\n"
+    (day / f"rollout-2026-06-10T12-31-46-{CODEX_PARENT}.jsonl").write_text(
+        meta(CODEX_PARENT, {"thread_source": "user", "source": "exec"}) + prompt + usage)
+    (day / f"rollout-2026-06-10T12-32-00-{CODEX_CHILD}.jsonl").write_text(
+        meta(CODEX_CHILD, {"thread_source": "subagent",
+                           "forked_from_id": CODEX_PARENT,
+                           "source": {"subagent": {"thread_spawn": {
+                               "parent_thread_id": CODEX_PARENT, "depth": 1,
+                               "agent_nickname": "Dewey", "agent_role": "explorer"}}}})
+        + usage)
+
+
+def test_scan_codex_discovery_and_linkage(scan_env, monkeypatch):
+    codex_dir = scan_env / ".codex"
+    monkeypatch.setattr(main, "CODEX_DIR", codex_dir)
+    _make_codex_tree(codex_dir)
+    by_id = {s["id"]: s for s in main._scan_sessions_sync() if s["agent"] == "codex"}
+    # Discovered from rollout files alone — no session_index.jsonl exists.
+    assert set(by_id) == {CODEX_PARENT, CODEX_CHILD}
+    assert by_id[CODEX_PARENT]["text"] == "probe prompt"
+    assert by_id[CODEX_CHILD]["parent_session_id"] == CODEX_PARENT
+    assert by_id[CODEX_CHILD]["subagent_info"] == {"role": "explorer",
+                                                   "nickname": "Dewey", "depth": 1}
+    assert by_id[CODEX_PARENT]["delegation"] == {"supported": True,
+                                                 "tokens_recorded": False,
+                                                 "linked_children": 1}
+    # Each thread keeps its own tokens (count-once).
+    assert by_id[CODEX_PARENT]["tokens"]["total"] == 70
+    assert by_id[CODEX_CHILD]["tokens"]["total"] == 70
+
+
+def test_endpoint_codex(scan_env, monkeypatch):
+    codex_dir = scan_env / ".codex"
+    monkeypatch.setattr(main, "CODEX_DIR", codex_dir)
+    _make_codex_tree(codex_dir)
+    r = _run(main.session_delegation(CODEX_PARENT, "codex"))
+    assert r["child_session_ids"] == [CODEX_CHILD]
+    assert r["subagents"][0]["agent_role"] == "explorer"
+    r = _run(main.session_delegation(CODEX_CHILD, "codex"))
+    assert r["parent_session_id"] == CODEX_PARENT
+    assert r["subagent_info"]["nickname"] == "Dewey"
+
+
+def test_antigravity_subagent_children(scan_env, monkeypatch):
+    brain = scan_env / "brain"
+    parent = "6fd942ec-d61d-4d38-a5d4-a3054d58835f"
+    child = "d5361c61-c969-4f95-89b8-942bc99a4c24"
+    logs = brain / parent / ".system_generated" / "logs"
+    logs.mkdir(parents=True)
+    # INVOKE_SUBAGENT content embeds the child id as escaped JSON (verified shape).
+    (logs / "transcript.jsonl").write_text(json.dumps({
+        "step_index": 6, "source": "MODEL", "type": "INVOKE_SUBAGENT",
+        "content": 'Created the following subagents:\n{\n  "conversationId": "%s",\n}' % child,
+    }) + "\n")
+    monkeypatch.setattr(main, "ANTIGRAVITY_BRAIN_DIRS", [brain])
+    assert main._antigravity_subagent_children(parent) == [child]
+    # Linkage pass annotates both sides of a synthetic session list.
+    sessions = [{"id": parent, "agent": "antigravity"},
+                {"id": child, "agent": "antigravity"}]
+    main._antigravity_link_subagents(sessions)
+    assert sessions[0]["delegation"]["linked_children"] == 1
+    assert sessions[1]["parent_session_id"] == parent
+
+
 # --- /sessions/{id}/delegation endpoint -------------------------------------
 
 def _run(coro):

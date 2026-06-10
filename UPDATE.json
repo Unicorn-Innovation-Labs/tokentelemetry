@@ -20,8 +20,12 @@
           "href": "/analytics"
         },
         {
-          "title": "Honest gaps, not fake zeros",
-          "description": "Cursor records subagent runs but not their tokens; OpenCode and Hermes link parent and child sessions; other agents don't log spawns at all. The dashboard says exactly which of these applies instead of showing a misleading 0 — and existing session totals are unchanged, delegated usage is always a separate bucket."
+          "title": "Delegation across Grok Build, Codex & Antigravity too",
+          "description": "Grok Build, Codex and Antigravity CLI all spawn subagents as separate sessions — those are now linked: the parent session shows each spawn (task, duration, role) with a jump to the child session, and children link back to their parent. Cursor shows spawn counts; agents that don't log spawns say so honestly instead of showing a misleading 0."
+        },
+        {
+          "title": "Recent Codex sessions were missing — now found",
+          "description": "Newer Codex versions stopped updating the session index TokenTelemetry relied on, so sessions from the last weeks never appeared. Sessions are now discovered from the session files themselves — expect your Codex session count (and totals) to jump to reality."
         }
       ]
     },

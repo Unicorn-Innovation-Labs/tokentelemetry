@@ -58,9 +58,38 @@ All shapes below were verified against real data on this machine (2026-06-10).
   display-only delegated sums on parent). NEVER add child sums into aggregate
   totals — that would double-count.
 
+### Grok Build / Codex / Antigravity CLI (probe findings, 2026-06-10)
+
+Verified by actually RUNNING the CLIs headlessly with a delegation prompt
+(grok 0.2.39, codex 0.136.0, agy 1.0.7) — all three support subagents:
+
+- **Grok Build** (subagents ON by default; `--no-subagents` to disable):
+  parent writes `<session>/subagents/<spawn-id>/meta.json` with
+  `{subagent_type, description, prompt, status, duration_ms, tool_calls,
+  turns, effective_model_id, parent_session_id, child_session_id}`. The child
+  is a full sibling session dir with its own `signals.json`
+  (`contextTokensUsed`) — already counted as a session, annotation only.
+  `spawn_subagent` / `get_command_or_subagent_output` appear in events.jsonl.
+- **Codex** (`multi_agent` feature flag stable+enabled): each subagent thread
+  is its own rollout file whose `session_meta.payload` carries
+  `thread_source: "subagent"`, `forked_from_id`, and
+  `source.subagent.thread_spawn {parent_thread_id, depth, agent_nickname,
+  agent_role}`. NOTE: plain `forked_from_id` also fires for user `codex fork`
+  — require the subagent markers. **Discovery bug found**: codex stopped
+  maintaining `session_index.jsonl` (frozen 2026-04-23 on this machine), so
+  index-seeded discovery missed every newer session (10 indexed vs 36 actual)
+  — scanner now globs rollouts and uses the index only for legacy thread
+  names.
+- **Antigravity CLI** (`agy`): spawns create full sibling conversations; the
+  parent's brain transcript
+  (`brain/<id>/.system_generated/logs/transcript.jsonl`) records an
+  `INVOKE_SUBAGENT` step whose content embeds the child `conversationId`
+  (JSON-escaped). Children link back via `send_message` to the parent id.
+  Retroactive linkage over existing local data found 7 parents / 10 children.
+
 ### No subagent signal (render explicit "not recorded by <agent>")
 
-codex, gemini, qwen, grok, copilot, vibe, antigravity.
+gemini, qwen, copilot, vibe.
 
 ## 2. Token semantics — the count-once invariant
 

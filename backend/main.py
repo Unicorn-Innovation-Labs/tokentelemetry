@@ -1854,6 +1854,12 @@ def _scan_grok_sessions() -> List[Dict[str, Any]]:
                 "commit": summary.get("head_commit"),
             }
 
+            # Subagent spawns: Grok writes <session>/subagents/<id>/meta.json with
+            # {subagent_type, description, status, duration_ms, tool_calls, turns,
+            #  parent_session_id, child_session_id}. The child runs as its OWN
+            # session dir (already counted above/below) — annotation only.
+            grok_spawns = _grok_subagent_meta(sess_id_dir)
+
             sess = {
                 "id": sid,
                 "agent": "grok",
@@ -1877,9 +1883,64 @@ def _scan_grok_sessions() -> List[Dict[str, Any]]:
                     "last_active_at": summary.get("last_active_at"),
                 },
             }
+            if grok_spawns:
+                by_type: Dict[str, Dict[str, Any]] = {}
+                for sp in grok_spawns:
+                    bt = by_type.setdefault(sp.get("agent_type") or "unknown", {"count": 0})
+                    bt["count"] += 1
+                sess["delegation"] = {"supported": True, "tokens_recorded": False,
+                                      "spawn_count": len(grok_spawns),
+                                      "by_type": by_type}
+                sess["child_session_ids"] = [sp["child_session_id"] for sp in grok_spawns
+                                             if sp.get("child_session_id")]
             out.append(sess)
 
+    # Children are full sessions in the same bucket — annotate them with their
+    # parent (count-once: their tokens already stand on their own).
+    grok_by_id = {s["id"]: s for s in out}
+    for s in out:
+        for cid in s.get("child_session_ids") or []:
+            child = grok_by_id.get(cid)
+            if child is not None:
+                child["parent_session_id"] = s["id"]
     return out
+
+
+def _grok_subagent_meta(sess_dir: Path) -> List[Dict[str, Any]]:
+    """Read Grok Build subagent spawn records for one session.
+
+    Verified shape (grok 0.2.39): <session>/subagents/<spawn-id>/meta.json with
+    subagent_type, description, prompt, status, started_at/completed_at,
+    duration_ms, tool_calls, turns, effective_model_id, parent_session_id and
+    child_session_id — the child is a full sibling session directory.
+    """
+    sub_dir = sess_dir / "subagents"
+    entries: List[Dict[str, Any]] = []
+    try:
+        if not sub_dir.is_dir():
+            return entries
+        for meta_path in sorted(sub_dir.glob("*/meta.json")):
+            try:
+                with open(meta_path, "r", encoding="utf-8") as f:
+                    m = json.load(f)
+            except Exception:
+                continue
+            if not isinstance(m, dict):
+                continue
+            entries.append({
+                "agent_id": m.get("subagent_id") or meta_path.parent.name,
+                "agent_type": m.get("subagent_type") or "unknown",
+                "description": m.get("description"),
+                "status": m.get("status"),
+                "duration_ms": m.get("duration_ms"),
+                "tool_calls": m.get("tool_calls"),
+                "turns": m.get("turns"),
+                "model": m.get("effective_model_id"),
+                "child_session_id": m.get("child_session_id"),
+            })
+    except Exception:
+        pass
+    return entries
 
 
 def _reconstruct_vscode_chat_jsonl(path) -> Dict[str, Any]:
@@ -1972,8 +2033,66 @@ def _opencode_resolve_model(val):
 
 # Agents whose local logs record subagent/child-session spawns at all.
 # claude: full token rollup; cursor: spawn count only (transcripts carry no
-# usage fields); opencode/hermes: parent/child linkage between real sessions.
-_DELEGATION_CAPABLE_AGENTS = {"claude", "cursor", "opencode", "hermes"}
+# usage fields); opencode/hermes: parent/child linkage between real sessions;
+# grok: subagents/<id>/meta.json spawn records, children are sibling sessions;
+# codex: child rollouts carry thread_source="subagent" + parent thread id;
+# antigravity: parent brain transcript INVOKE_SUBAGENT steps name the child
+# conversation ids. (All verified empirically by running the CLIs — see
+# DESIGN.md "probe findings".)
+_DELEGATION_CAPABLE_AGENTS = {"claude", "cursor", "opencode", "hermes",
+                              "grok", "codex", "antigravity"}
+
+
+# content is JSON-escaped inside the INVOKE_SUBAGENT step record, so the quote
+# before the uuid may appear as \" in the raw line.
+_AG_CONVERSATION_ID_RE = re.compile(
+    r'conversationId\\?["\']?\s*:\s*\\?["\']'
+    r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})')
+
+
+def _antigravity_subagent_children(sid: str) -> List[str]:
+    """Child conversation ids spawned by an Antigravity session, from the
+    INVOKE_SUBAGENT steps in its brain transcript. Empty when none/no transcript."""
+    kids: List[str] = []
+    for brain_dir in ANTIGRAVITY_BRAIN_DIRS:
+        tpath = brain_dir / sid / ".system_generated" / "logs" / "transcript.jsonl"
+        try:
+            if not tpath.exists():
+                continue
+            with open(tpath, "r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    if "INVOKE_SUBAGENT" not in line:
+                        continue
+                    for cid in _AG_CONVERSATION_ID_RE.findall(line):
+                        if cid != sid and cid not in kids:
+                            kids.append(cid)
+        except Exception:
+            continue
+    return kids
+
+
+def _antigravity_link_subagents(sessions: List[Dict[str, Any]]) -> None:
+    """Link Antigravity parent conversations to their spawned subagents.
+
+    `agy` supports parallel subagents; each spawn creates a full sibling
+    conversation. The parent's brain transcript
+    (brain/<id>/.system_generated/logs/transcript.jsonl) records an
+    INVOKE_SUBAGENT step whose content embeds the child's conversationId.
+    Children are already counted as their own sessions — annotation only.
+    """
+    ag = {s["id"]: s for s in sessions if s.get("agent") == "antigravity"}
+    if not ag:
+        return
+    for sid, sess in ag.items():
+        kids = _antigravity_subagent_children(sid)
+        if kids:
+            sess["child_session_ids"] = kids
+            sess["delegation"] = {"supported": True, "tokens_recorded": False,
+                                  "linked_children": len(kids)}
+            for cid in kids:
+                child = ag.get(cid)
+                if child is not None:
+                    child["parent_session_id"] = sid
 
 # Skill / slash-command invocations (Claude Code). Two structured signals:
 #   - assistant tool_use named "Skill" with input.skill = "<name>";
@@ -2341,7 +2460,7 @@ def _scan_sessions_sync():
         sessions.extend(claude_sessions.values())
     # 2. Codex
     codex_index = CODEX_DIR / "session_index.jsonl"
-    if codex_index.exists():
+    if codex_index.exists() or (CODEX_DIR / "sessions").is_dir():
         codex_sessions = {}
         # Pre-index Codex rollout files
         codex_file_map = {}
@@ -2366,6 +2485,20 @@ def _scan_sessions_sync():
                             codex_sessions[sid] = {"id": sid, "agent": "codex", "project": "unknown", "timestamp": ts, "text": data.get("thread_name"), "tokens": {"input": 0, "output": 0, "cached": 0, "total": 0}, "mcp_tools": [], "has_plan": False, "plans": [], "model": None, "artifacts": []}
                     except Exception: continue
         except Exception: pass
+
+        # The index is no longer maintained by recent Codex versions (observed
+        # frozen since codex 0.13x): exec runs and subagent threads never get
+        # an entry, and neither do new interactive sessions. Discover every
+        # session from the rollout files themselves; the index above only
+        # contributes nicer thread names for legacy entries.
+        for sid, files in codex_file_map.items():
+            if sid in codex_sessions:
+                continue
+            try:
+                ts = max(_file_mtime_utc(f) for f in files)
+            except Exception:
+                ts = _now()
+            codex_sessions[sid] = {"id": sid, "agent": "codex", "project": "unknown", "timestamp": ts, "text": None, "tokens": {"input": 0, "output": 0, "cached": 0, "total": 0}, "mcp_tools": [], "has_plan": False, "plans": [], "model": None, "artifacts": []}
         
         # Process the 100 most recent sessions
         for sid, sess in sorted(codex_sessions.items(), key=lambda kv: kv[1]["timestamp"], reverse=True)[:100]:
@@ -2385,6 +2518,24 @@ def _scan_sessions_sync():
                                     sess["model"] = data["payload"].get("model")
                                 if not sess.get("_provider"):
                                     sess["_provider"] = data["payload"].get("model_provider")
+                                # Subagent threads (multi_agent feature): the child
+                                # rollout's session_meta carries thread_source ==
+                                # "subagent" plus source.subagent.thread_spawn with
+                                # the parent thread id, depth, role and nickname.
+                                # forked_from_id alone is NOT enough — user-initiated
+                                # `codex fork` sets it too with thread_source "user".
+                                _src = data["payload"].get("source")
+                                _spawn = (_src.get("subagent") or {}).get("thread_spawn") if isinstance(_src, dict) else None
+                                if data["payload"].get("thread_source") == "subagent" or _spawn:
+                                    _spawn = _spawn or {}
+                                    _pid = _spawn.get("parent_thread_id") or data["payload"].get("forked_from_id")
+                                    if _pid:
+                                        sess["parent_session_id"] = _pid
+                                    sess["subagent_info"] = {
+                                        "role": _spawn.get("agent_role") or data["payload"].get("agent_role"),
+                                        "nickname": _spawn.get("agent_nickname") or data["payload"].get("agent_nickname"),
+                                        "depth": _spawn.get("depth"),
+                                    }
                             if data.get("type") == "turn_context" and not sess.get("model"):
                                 sess["model"] = data.get("payload", {}).get("model")
                             if data.get("type") == "event_msg":
@@ -2396,6 +2547,13 @@ def _scan_sessions_sync():
                                         event_day = _aware(event_dt).strftime("%Y-%m-%d")
                                     except Exception: pass
 
+                                # Sessions discovered from rollouts (not the stale
+                                # index) have no thread_name; first user prompt is
+                                # the natural display.
+                                if not sess.get("text") and (data.get("payload") or {}).get("type") == "user_message":
+                                    _um = data["payload"].get("message")
+                                    if isinstance(_um, str) and _um.strip():
+                                        sess["text"] = _um.strip()[:120]
                                 usage = ((data.get("payload") or {}).get("info") or {}).get("total_token_usage") or {}
                                 if usage:
                                     # OpenAI/Codex semantics differ from Anthropic:
@@ -2465,6 +2623,17 @@ def _scan_sessions_sync():
             mcp = _mcp_usage_from_counts(s.get("tool_counts") or {})
             if mcp:
                 s["mcp_usage"] = mcp
+        # Annotate parents of subagent threads (children are full sessions with
+        # their own usage — linkage only, never re-summed).
+        for s in codex_sessions.values():
+            pid = s.get("parent_session_id")
+            if pid and pid in codex_sessions:
+                codex_sessions[pid].setdefault("child_session_ids", []).append(s["id"])
+        for s in codex_sessions.values():
+            kids = s.get("child_session_ids") or []
+            if kids:
+                s["delegation"] = {"supported": True, "tokens_recorded": False,
+                                   "linked_children": len(kids)}
         sessions.extend(codex_sessions.values())
 
     # 3 & 7. Gemini & Antigravity
@@ -3301,6 +3470,9 @@ def _scan_sessions_sync():
             h_sess["delegation"] = {"supported": True, "tokens_recorded": False,
                                     "linked_children": len(kids)}
 
+    # Antigravity subagent linkage (needs the full session list to pair ids).
+    _antigravity_link_subagents(sessions)
+
     # Every session gets an explicit delegation marker: agents whose logs carry
     # no spawn signal report supported=False (an honest "n/a", never a fake 0).
     # Capability is per-agent — a claude session outside the parsed top-100 is
@@ -4030,6 +4202,90 @@ async def session_delegation(session_id: str, agent: str):
             except Exception:
                 continue
         return {"error": "Not found"}
+
+    if agent == "grok":
+        for bucket in GROK_SESSIONS_DIR.glob("*"):
+            sess_dir = bucket / session_id
+            if not (sess_dir.is_dir() and (sess_dir / GROK_SUMMARY).exists()):
+                continue
+            spawns = _grok_subagent_meta(sess_dir)
+            # Parent linkage: the parent's spawn meta names this session as child.
+            parent_id = None
+            try:
+                for other in bucket.iterdir():
+                    if not other.is_dir() or other.name == session_id:
+                        continue
+                    for m in _grok_subagent_meta(other):
+                        if m.get("child_session_id") == session_id:
+                            parent_id = other.name
+                            break
+                    if parent_id:
+                        break
+            except Exception:
+                pass
+            return {"supported": True, "tokens_recorded": False,
+                    "spawn_count": len(spawns), "subagents": spawns,
+                    "parent_session_id": parent_id,
+                    "child_session_ids": [m["child_session_id"] for m in spawns
+                                          if m.get("child_session_id")],
+                    "linked_children": len(spawns)}
+        return {"error": "Not found"}
+
+    if agent == "codex":
+        def _spawn_meta(path):
+            """(payload, thread_spawn) from a rollout's session_meta first line."""
+            try:
+                with open(path, "r", encoding="utf-8", errors="replace") as f:
+                    first = json.loads(f.readline())
+            except Exception:
+                return None, None
+            p = first.get("payload") or {}
+            src = p.get("source")
+            spawn = (src.get("subagent") or {}).get("thread_spawn") if isinstance(src, dict) else None
+            if spawn is None and p.get("thread_source") == "subagent":
+                spawn = {}
+            return p, spawn
+
+        own = list(CODEX_DIR.glob(f"sessions/**/rollout-*{session_id}*.jsonl"))
+        if not own:
+            return {"error": "Not found"}
+        payload, spawn = _spawn_meta(own[0])
+        parent_id = None
+        info = None
+        if spawn is not None:
+            parent_id = spawn.get("parent_thread_id") or (payload or {}).get("forked_from_id")
+            info = {"role": spawn.get("agent_role") or (payload or {}).get("agent_role"),
+                    "nickname": spawn.get("agent_nickname") or (payload or {}).get("agent_nickname"),
+                    "depth": spawn.get("depth")}
+        children = []
+        try:
+            for f in (CODEX_DIR / "sessions").rglob("rollout-*.jsonl"):
+                if session_id in f.name:
+                    continue
+                p, sp = _spawn_meta(f)
+                if sp is None:
+                    continue
+                pid = sp.get("parent_thread_id") or (p or {}).get("forked_from_id")
+                if pid != session_id:
+                    continue
+                parts = f.stem.split("-")
+                children.append({
+                    "child_session_id": "-".join(parts[-5:]) if len(parts) >= 6 else f.stem,
+                    "agent_role": sp.get("agent_role") or (p or {}).get("agent_role"),
+                    "nickname": sp.get("agent_nickname") or (p or {}).get("agent_nickname"),
+                })
+        except Exception:
+            pass
+        return {"supported": True, "tokens_recorded": False,
+                "parent_session_id": parent_id, "subagent_info": info,
+                "subagents": children,
+                "child_session_ids": [c["child_session_id"] for c in children],
+                "linked_children": len(children)}
+
+    if agent == "antigravity":
+        kids = _antigravity_subagent_children(session_id)
+        return {"supported": True, "tokens_recorded": False,
+                "child_session_ids": kids, "linked_children": len(kids)}
 
     return {"supported": False}
 

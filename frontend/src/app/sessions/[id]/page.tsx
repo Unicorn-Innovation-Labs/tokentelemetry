@@ -254,8 +254,8 @@ export default function SessionDetailPage() {
 
       // 5. Delegation overlay: subagent spawns + delegated token/cost attribution.
       // Only agents whose logs record spawns at all (claude full, cursor count-only,
-      // opencode/hermes parent-child links).
-      if (agent === "claude" || agent === "cursor" || agent === "opencode" || agent === "hermes") {
+      // grok/codex/antigravity/opencode/hermes parent-child links).
+      if (["claude", "cursor", "opencode", "hermes", "grok", "codex", "antigravity"].includes(agent)) {
         apiFetch(`/sessions/${id}/delegation?agent=${agent}`)
           .then(res => res.json())
           .then(data => setDelegation(data && data.supported ? data : null))
@@ -1859,29 +1859,37 @@ function DelegationCard({ delegation, agent }: { delegation: any; agent: string 
           <Stat label="Delegated cost" value={formatCost(delegation.cost)} />
         </div>
       )}
-      {subagents.length > 0 && delegation.tokens_recorded && (
+      {subagents.length > 0 && (
         <div className="space-y-1">
           {subagents.map((s: any, i: number) => (
-            <div key={s.agent_id ?? i} className="flex items-center justify-between gap-3 text-[11px] font-mono text-[var(--tt-fg-muted)] py-1.5 px-2 hover:bg-[var(--tt-sunken)] rounded">
+            <div key={s.agent_id ?? s.child_session_id ?? i} className="flex items-center justify-between gap-3 text-[11px] font-mono text-[var(--tt-fg-muted)] py-1.5 px-2 hover:bg-[var(--tt-sunken)] rounded">
               <span className="flex items-center gap-2 min-w-0">
-                <Badge>{s.agent_type}</Badge>
-                <span className="truncate text-[var(--tt-fg)]">{s.description || s.agent_id}</span>
+                <Badge>{s.agent_type || s.agent_role || "subagent"}</Badge>
+                <span className="truncate text-[var(--tt-fg)]">{s.description || s.nickname || s.agent_id}</span>
               </span>
               <span className="flex items-center gap-3 shrink-0">
                 {s.model && <span className="text-[var(--tt-fg-dim)]">{s.model.replace(/-\d{8}$/, "")}</span>}
-                <span>in/out {formatTokens(s.tokens?.input)}/{formatTokens(s.tokens?.output)}</span>
-                <span className="text-[var(--tt-cyan-fg)]">{formatTokens(s.tokens?.cached)} cached</span>
-                <span className="text-[var(--tt-fg)]">{formatCost(s.cost)}</span>
+                {typeof s.duration_ms === "number" && <span className="text-[var(--tt-fg-dim)]">{(s.duration_ms / 1000).toFixed(1)}s</span>}
+                {s.tokens != null && (
+                  <>
+                    <span>in/out {formatTokens(s.tokens?.input)}/{formatTokens(s.tokens?.output)}</span>
+                    <span className="text-[var(--tt-cyan-fg)]">{formatTokens(s.tokens?.cached)} cached</span>
+                  </>
+                )}
+                {s.cost != null && <span className="text-[var(--tt-fg)]">{formatCost(s.cost)}</span>}
+                {s.child_session_id && (
+                  <Link href={`/sessions/${s.child_session_id}?agent=${agent}`} className="text-[var(--tt-brand)] hover:underline">open</Link>
+                )}
               </span>
             </div>
           ))}
         </div>
       )}
 
-      {/* Cursor: spawn count only — transcripts carry no usage data */}
-      {spawnCount > 0 && !delegation.tokens_recorded && (
-        <div className="text-[11px] text-[var(--tt-fg-muted)]">
-          {spawnCount} subagent run{spawnCount === 1 ? "" : "s"} recorded. {agent === "cursor" ? "Cursor's subagent transcripts contain no token usage, so their cost can't be attributed." : ""}
+      {/* Cursor: spawn count only — its transcripts carry no usage data and no descriptions */}
+      {spawnCount > 0 && agent === "cursor" && (
+        <div className="mt-2 text-[11px] text-[var(--tt-fg-muted)]">
+          Cursor's subagent transcripts contain no token usage, so their cost can't be attributed.
         </div>
       )}
 
