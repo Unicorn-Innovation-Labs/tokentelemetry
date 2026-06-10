@@ -2982,6 +2982,8 @@ def _scan_sessions_sync():
                     model = srow["model"]
                     # Prefer Hermes's own cost (it knows exotic models we may not price)
                     cost = srow["actual_cost_usd"] if srow["actual_cost_usd"] is not None else srow["estimated_cost_usd"]
+                    # Bind before the branch: it's referenced unconditionally in the
+                    # session dict below, but only computed when cost must be derived.
                     _measured_tps = None
                     if cost is None:
                         # Only when TT has to compute the cost itself AND the session
