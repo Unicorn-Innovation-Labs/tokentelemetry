@@ -320,6 +320,26 @@ def test_mcp_usage_from_counts_parses_and_skips_malformed():
                    "jira": {"search": 2}}
 
 
+def test_mcp_usage_gemini_single_underscore_convention():
+    # Real names observed in ~/.gemini chats: servers may contain dashes,
+    # tools contain underscores, and some calls carry a default_api: wrapper.
+    out = main._mcp_usage_from_counts({
+        "mcp_computerUse_execute_action": 10,
+        "mcp_local-server_take_snapshot": 9,
+        "default_api:mcp_local-server_fill": 36,
+        "mcp_blender_execute_blender_code": 8,
+        "mcp_github_get_file_contents": 7,
+        "run_shell_command": 500,  # not MCP
+        "mcp_orphan": 1,           # malformed (no tool part)
+    })
+    assert out == {
+        "computerUse": {"execute_action": 10},
+        "local-server": {"take_snapshot": 9, "fill": 36},
+        "blender": {"execute_blender_code": 8},
+        "github": {"get_file_contents": 7},
+    }
+
+
 def test_scan_claude_skills_and_mcp(scan_env):
     make_claude_tree(scan_env / ".claude")
     s = [s for s in main._scan_sessions_sync() if s["agent"] == "claude"][0]
@@ -382,9 +402,11 @@ def test_analytics_ecosystem_aggregates(monkeypatch):
 
     monkeypatch.setattr(main, "get_sessions_cached", fake_sessions)
     a = _run(main.get_analytics())
-    assert a["by_skill"] == {"graphify": {"invocations": 3, "session_count": 2}}
+    assert a["by_skill"] == {"graphify": {"invocations": 3, "session_count": 2,
+                                          "agents": ["claude"]}}
     assert a["by_mcp_server"] == {"chrome": {"calls": 6, "session_count": 2,
-                                             "tools": {"navigate": 4, "find": 2}}}
+                                             "tools": {"navigate": 4, "find": 2},
+                                             "agents": ["claude"]}}
     assert a["by_subagent_type"]["Explore"] == {
         "spawns": 2, "tokens": 500, "cost": 0.2, "session_count": 1,
         "tokens_recorded": True, "agents": ["claude"]}

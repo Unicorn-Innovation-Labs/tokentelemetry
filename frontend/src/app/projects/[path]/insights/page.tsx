@@ -114,8 +114,8 @@ export default function InsightsTab() {
     type AgentRow = { parents: number; spawns: number; children: number; childTokens: number; childCost: number; delegatedTokens: number; delegatedCost: number };
     const byAgent: Record<string, AgentRow> = {};
     const types: Record<string, { spawns: number; tokens: number; cost: number; recorded: boolean; agents: Set<string> }> = {};
-    const skills: Record<string, { invocations: number; sessions: number }> = {};
-    const mcp: Record<string, { calls: number; sessions: number; tools: Record<string, number> }> = {};
+    const skills: Record<string, { invocations: number; sessions: number; agents: Set<string> }> = {};
+    const mcp: Record<string, { calls: number; sessions: number; tools: Record<string, number>; agents: Set<string> }> = {};
     const byKey = new Map(sessions.map((s) => [`${s.agent}:${s.id}`, s]));
     let delegatedTokens = 0, delegatedCost = 0, sessionsWithSpawns = 0, linkedChildren = 0, childTokens = 0;
 
@@ -155,12 +155,12 @@ export default function InsightsTab() {
         const r = arow(s.agent); r.children++; r.childTokens += s.tokens?.total || 0; r.childCost += s.cost || 0;
       }
       for (const sk of s.skills_used || []) {
-        const r = (skills[sk.name] ||= { invocations: 0, sessions: 0 });
-        r.invocations += sk.count; r.sessions++;
+        const r = (skills[sk.name] ||= { invocations: 0, sessions: 0, agents: new Set() });
+        r.invocations += sk.count; r.sessions++; r.agents.add(s.agent);
       }
       for (const [srv, tools] of Object.entries(s.mcp_usage || {})) {
-        const r = (mcp[srv] ||= { calls: 0, sessions: 0, tools: {} });
-        r.sessions++;
+        const r = (mcp[srv] ||= { calls: 0, sessions: 0, tools: {}, agents: new Set() });
+        r.sessions++; r.agents.add(s.agent);
         for (const [tool, n] of Object.entries(tools)) { r.calls += n; r.tools[tool] = (r.tools[tool] || 0) + n; }
       }
     }
@@ -347,8 +347,11 @@ export default function InsightsTab() {
                   <ul className="space-y-1.5">
                     {eco.skills.slice(0, 12).map(([name, r]) => (
                       <li key={name} className="flex items-center justify-between gap-2 text-[11px]">
-                        <span className="font-mono text-[var(--tt-fg)] truncate" title={name}>/{name}</span>
-                        <span className="tabular text-[10px] text-[var(--tt-fg-dim)] whitespace-nowrap">×{r.invocations} · {r.sessions} sess</span>
+                        <span className="min-w-0">
+                          <span className="font-mono text-[var(--tt-fg)] truncate block" title={name}>/{name}</span>
+                          <span className="text-[10px] text-[var(--tt-fg-dim)]">{[...r.agents].join(", ")}</span>
+                        </span>
+                        <span className="tabular text-[10px] text-[var(--tt-fg-dim)] whitespace-nowrap shrink-0">×{r.invocations} · {r.sessions} sess</span>
                       </li>
                     ))}
                   </ul>
@@ -369,6 +372,7 @@ export default function InsightsTab() {
                             <span className="tabular text-[10px] text-[var(--tt-fg-dim)] whitespace-nowrap">{r.calls} calls · {r.sessions} sess</span>
                           </div>
                           <div className="text-[10px] text-[var(--tt-fg-dim)] truncate">
+                            <span className="text-[var(--tt-fg-muted)]">{[...r.agents].join(", ")} · </span>
                             {top.map(([tool, n]) => `${tool} ×${n}`).join(" · ")}
                           </div>
                         </li>

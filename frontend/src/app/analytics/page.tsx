@@ -24,8 +24,8 @@ interface AnalyticsData {
   by_agent: Record<string, AgentStats>;
   by_day: { date: string; total: number; input: number; output: number; cached: number; cost: number }[];
   by_model?: Record<string, AgentStats & { agent: string }>;
-  by_skill?: Record<string, { invocations: number; session_count: number }>;
-  by_mcp_server?: Record<string, { calls: number; tools: Record<string, number>; session_count: number }>;
+  by_skill?: Record<string, { invocations: number; session_count: number; agents?: string[] }>;
+  by_mcp_server?: Record<string, { calls: number; tools: Record<string, number>; session_count: number; agents?: string[] }>;
   by_subagent_type?: Record<string, { spawns: number; tokens: number; cost: number; session_count: number; tokens_recorded?: boolean; agents?: string[] }>;
   delegation?: {
     delegated_tokens: number; delegated_cost: number; sessions_with_spawns: number;
@@ -553,8 +553,13 @@ function EcosystemSection({ data }: { data: AnalyticsData }) {
             <ul className="space-y-2">
               {skills.map((s) => (
                 <li key={s.name} className="flex items-center justify-between gap-2 text-[11px]">
-                  <span className="font-mono text-[var(--tt-fg)] truncate" title={s.name}>/{s.name}</span>
-                  <span className="tabular text-[var(--tt-fg-dim)] whitespace-nowrap">
+                  <span className="min-w-0">
+                    <span className="font-mono text-[var(--tt-fg)] truncate block" title={s.name}>/{s.name}</span>
+                    {s.agents && s.agents.length > 0 && (
+                      <span className="text-[10px] text-[var(--tt-fg-dim)]">{s.agents.join(", ")}</span>
+                    )}
+                  </span>
+                  <span className="tabular text-[var(--tt-fg-dim)] whitespace-nowrap shrink-0">
                     ×{s.invocations} · {s.session_count} session{s.session_count === 1 ? "" : "s"}
                   </span>
                 </li>
@@ -581,6 +586,7 @@ function EcosystemSection({ data }: { data: AnalyticsData }) {
                       </span>
                     </div>
                     <div className="mt-0.5 text-[10px] text-[var(--tt-fg-dim)] truncate">
+                      {m.agents && m.agents.length > 0 && <span className="text-[var(--tt-fg-muted)]">{m.agents.join(", ")} · </span>}
                       {topTools.map(([tool, n]) => `${tool} ×${n}`).join(" · ")}
                       {Object.keys(m.tools).length > 3 && ` · +${Object.keys(m.tools).length - 3} more`}
                     </div>

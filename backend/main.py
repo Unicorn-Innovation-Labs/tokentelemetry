@@ -2121,16 +2121,34 @@ def _count_tool(tool_counts: Dict[str, int], name) -> None:
 
 
 def _mcp_usage_from_counts(tool_counts: Dict[str, int]) -> Dict[str, Dict[str, int]]:
-    """Group mcp__<server>__<tool> call counts by server. Non-MCP names skipped."""
+    """Group MCP tool-call counts by server. Non-MCP names skipped.
+
+    Naming conventions differ per agent (both verified in real logs):
+      - claude/cursor/qwen-style: mcp__<server>__<tool>  (double underscore)
+      - gemini-style: mcp_<server>_<tool>, sometimes wrapped as
+        default_api:mcp_<server>_<tool>; servers may contain dashes
+        (local-server) so only the FIRST underscore after the server splits.
+    """
     out: Dict[str, Dict[str, int]] = {}
     for name, n in tool_counts.items():
-        if not isinstance(name, str) or not name.startswith("mcp__"):
+        if not isinstance(name, str):
             continue
-        parts = name.split("__", 2)
-        if len(parts) < 3 or not parts[1] or not parts[2]:
+        raw = name
+        if raw.startswith("default_api:"):
+            raw = raw[len("default_api:"):]
+        server_name = tool = None
+        if raw.startswith("mcp__"):
+            parts = raw.split("__", 2)
+            if len(parts) == 3 and parts[1] and parts[2]:
+                server_name, tool = parts[1], parts[2]
+        elif raw.startswith("mcp_"):
+            rest = raw[len("mcp_"):]
+            if "_" in rest:
+                server_name, tool = rest.split("_", 1)
+        if not server_name or not tool:
             continue
-        server = out.setdefault(parts[1], {})
-        server[parts[2]] = server.get(parts[2], 0) + n
+        server = out.setdefault(server_name, {})
+        server[tool] = server.get(tool, 0) + n
     return out
 
 
@@ -2704,6 +2722,7 @@ def _scan_sessions_sync():
                                 tokens = {"input": 0, "output": 0, "cached": 0, "total": 0}
                                 mcp_tools = []; has_plan = False; first_msg = ""; plans = []
                                 tool_counts: Dict[str, int] = {}
+                                skill_counts: Dict[str, int] = {}
                                 has_user = False
                                 for msg in data.get("messages", []):
                                     if msg.get("type") == "user":
@@ -2719,6 +2738,11 @@ def _scan_sessions_sync():
                                         for tc in msg["toolCalls"]:
                                             if tc.get("name") not in mcp_tools: mcp_tools.append(tc.get("name"))
                                             _count_tool(tool_counts, tc.get("name"))
+                                            # Gemini's structured skill signal.
+                                            if tc.get("name") == "activate_skill":
+                                                _sk = (tc.get("args") or {}).get("name")
+                                                if _sk:
+                                                    skill_counts[_sk] = skill_counts.get(_sk, 0) + 1
                                             if tc.get("name") == "exit_plan_mode":
                                                 plan_text = ""
                                                 pp = (tc.get("args") or {}).get("plan_path")
@@ -2757,7 +2781,7 @@ def _scan_sessions_sync():
                                 if sid in _seen_antigravity: continue
                                 _seen_antigravity.add(sid)
                                 _g_sess = {"id": sid, "agent": effective_agent, "project": project_path, "timestamp": ts, "display": first_msg[:100], "tokens": tokens, "mcp_tools": mcp_tools, "has_plan": has_plan, "plans": plans, "model": model, "artifacts": artifacts, "antigravity_source": _ag_surface.get(sid), "cost": tokens["cost"]}
-                                _attach_tool_usage(_g_sess, tool_counts)
+                                _attach_tool_usage(_g_sess, tool_counts, skill_counts)
                                 sessions.append(_g_sess)
                         except Exception: continue
                 # Scan logs.json for Antigravity sessions that have no chat JSON file
@@ -2917,7 +2941,7 @@ def _scan_sessions_sync():
                         sid = cf.stem; mcp_tools = []; has_plan = False; first_msg = ""; plans = []
                         tokens = {"input": 0, "output": 0, "cached": 0, "total": 0}
                         project_path = "unknown"; last_ts = _file_mtime_utc(cf); model = None
-                        artifacts = []; tool_counts = {}
+                        artifacts = []; tool_counts = {}; q_skill_counts = {}
                         with open(cf, "r", encoding="utf-8", errors="replace") as f:
                             for line in f:
                                 try:
@@ -2945,6 +2969,11 @@ def _scan_sessions_sync():
                                             if item.get("type") == "tool_use":
                                                 if item.get("name") not in mcp_tools: mcp_tools.append(item.get("name"))
                                                 _count_tool(tool_counts, item.get("name"))
+                                                # qwen is a gemini fork; same structured skill signal.
+                                                if item.get("name") == "activate_skill":
+                                                    _sk = (item.get("input") or {}).get("name")
+                                                    if _sk:
+                                                        q_skill_counts[_sk] = q_skill_counts.get(_sk, 0) + 1
                                             if item.get("type") == "thinking":
                                                 t_text = item.get("thinking", "")
                                                 if "plan" in t_text.lower() and len(t_text) > 100:
@@ -2954,7 +2983,7 @@ def _scan_sessions_sync():
                         tokens["total"] = tokens["input"] + tokens["output"] + tokens["cached"]
                         tokens["cost"] = calculate_cost(model, tokens["input"], tokens["output"], tokens["cached"], cache_creation_tokens=tokens.get("cache_creation", 0), cache_creation_1h_tokens=tokens.get("cache_creation_1h", 0))
                         _q_sess = {"id": sid, "agent": "qwen", "project": project_path, "timestamp": last_ts, "display": first_msg[:100], "tokens": tokens, "mcp_tools": mcp_tools, "has_plan": has_plan, "plans": plans, "model": model, "artifacts": artifacts, "cost": tokens["cost"]}
-                        _attach_tool_usage(_q_sess, tool_counts)
+                        _attach_tool_usage(_q_sess, tool_counts, q_skill_counts)
                         sessions.append(_q_sess)
                     except Exception: continue
 
@@ -4661,12 +4690,16 @@ async def get_analytics():
     for s in sessions:
         agent = s.get("agent")
         for sk in s.get("skills_used") or []:
-            row = by_skill.setdefault(sk["name"], {"invocations": 0, "session_count": 0})
+            row = by_skill.setdefault(sk["name"], {"invocations": 0, "session_count": 0, "agents": []})
             row["invocations"] += sk["count"]
             row["session_count"] += 1
+            if agent not in row["agents"]:
+                row["agents"].append(agent)
         for server, tools in (s.get("mcp_usage") or {}).items():
-            row = by_mcp_server.setdefault(server, {"calls": 0, "tools": {}, "session_count": 0})
+            row = by_mcp_server.setdefault(server, {"calls": 0, "tools": {}, "session_count": 0, "agents": []})
             row["session_count"] += 1
+            if agent not in row["agents"]:
+                row["agents"].append(agent)
             for tool, n in tools.items():
                 row["calls"] += n
                 row["tools"][tool] = row["tools"].get(tool, 0) + n
