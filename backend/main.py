@@ -302,6 +302,21 @@ ANTIGRAVITY_BRAIN_DIRS = [d for d, _ in ANTIGRAVITY_BRAIN_SOURCES]
 ANTIGRAVITY_CLI_DIR = GEMINI_DIR / "antigravity-cli"
 PROJECT_ALIASES_FILE = data_dir() / "aliases.json"
 
+
+def _sqlite_ro_uri(db_path) -> str:
+    """Read-only sqlite URI that works on every OS.
+
+    f"file:{path}" breaks on Windows — backslashes are not URI path
+    separators, so sqlite fails to resolve the file and the scanner silently
+    skips the agent. Forward-slash the path (no-op on POSIX) and
+    percent-encode URI-special characters (spaces, '?', '#'); the drive
+    colon stays literal, which sqlite's Windows URI parser expects.
+    """
+    from urllib.parse import quote
+    p = db_path if hasattr(db_path, "as_posix") else Path(db_path)
+    return "file:" + quote(p.as_posix(), safe="/:") + "?mode=ro"
+
+
 def _load_project_aliases() -> Dict[str, str]:
     # Ensure directory exists
     PROJECT_ALIASES_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -432,7 +447,7 @@ def _antigravity_db_meta(db_path: Path) -> Dict[str, Optional[str]]:
     files: "Counter[str]" = Counter()
     gemini_home = str(GEMINI_DIR)
     try:
-        con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        con = sqlite3.connect(_sqlite_ro_uri(db_path), uri=True)
         try:
             for (blob,) in con.execute("SELECT data FROM gen_metadata WHERE data IS NOT NULL"):
                 if blob:
@@ -523,7 +538,7 @@ def _antigravity_cli_trace(db_path: Path, session_id: str) -> List[Dict[str, Any
     Returns events the existing viewer renders (user / reasoning / tool / tool
     output), or [] when nothing usable is found (caller falls back to brain)."""
     try:
-        con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        con = sqlite3.connect(_sqlite_ro_uri(db_path), uri=True)
     except sqlite3.Error:
         return []
     try:
@@ -803,7 +818,7 @@ def _hermes_memory_io(session_id: str) -> Dict[str, Any]:
     }
     for db_path in _hermes_dbs():
         try:
-            uri = f"file:{db_path}?mode=ro"
+            uri = _sqlite_ro_uri(db_path)
             conn = sqlite3.connect(uri, uri=True, timeout=1.0)
             try:
                 rows = conn.execute(
@@ -1854,6 +1869,12 @@ def _scan_grok_sessions() -> List[Dict[str, Any]]:
                 "commit": summary.get("head_commit"),
             }
 
+            # Subagent spawns: Grok writes <session>/subagents/<id>/meta.json with
+            # {subagent_type, description, status, duration_ms, tool_calls, turns,
+            #  parent_session_id, child_session_id}. The child runs as its OWN
+            # session dir (already counted above/below) — annotation only.
+            grok_spawns = _grok_subagent_meta(sess_id_dir)
+
             sess = {
                 "id": sid,
                 "agent": "grok",
@@ -1877,9 +1898,69 @@ def _scan_grok_sessions() -> List[Dict[str, Any]]:
                     "last_active_at": summary.get("last_active_at"),
                 },
             }
+            if grok_spawns:
+                by_type: Dict[str, Dict[str, Any]] = {}
+                for sp in grok_spawns:
+                    bt = by_type.setdefault(sp.get("agent_type") or "unknown",
+                                            {"count": 0, "child_session_ids": []})
+                    bt["count"] += 1
+                    # Child ids let /analytics attribute each child session's
+                    # (already-counted) tokens to its subagent type.
+                    if sp.get("child_session_id"):
+                        bt["child_session_ids"].append(sp["child_session_id"])
+                sess["delegation"] = {"supported": True, "tokens_recorded": False,
+                                      "spawn_count": len(grok_spawns),
+                                      "by_type": by_type}
+                sess["child_session_ids"] = [sp["child_session_id"] for sp in grok_spawns
+                                             if sp.get("child_session_id")]
             out.append(sess)
 
+    # Children are full sessions in the same bucket — annotate them with their
+    # parent (count-once: their tokens already stand on their own).
+    grok_by_id = {s["id"]: s for s in out}
+    for s in out:
+        for cid in s.get("child_session_ids") or []:
+            child = grok_by_id.get(cid)
+            if child is not None:
+                child["parent_session_id"] = s["id"]
     return out
+
+
+def _grok_subagent_meta(sess_dir: Path) -> List[Dict[str, Any]]:
+    """Read Grok Build subagent spawn records for one session.
+
+    Verified shape (grok 0.2.39): <session>/subagents/<spawn-id>/meta.json with
+    subagent_type, description, prompt, status, started_at/completed_at,
+    duration_ms, tool_calls, turns, effective_model_id, parent_session_id and
+    child_session_id — the child is a full sibling session directory.
+    """
+    sub_dir = sess_dir / "subagents"
+    entries: List[Dict[str, Any]] = []
+    try:
+        if not sub_dir.is_dir():
+            return entries
+        for meta_path in sorted(sub_dir.glob("*/meta.json")):
+            try:
+                with open(meta_path, "r", encoding="utf-8") as f:
+                    m = json.load(f)
+            except Exception:
+                continue
+            if not isinstance(m, dict):
+                continue
+            entries.append({
+                "agent_id": m.get("subagent_id") or meta_path.parent.name,
+                "agent_type": m.get("subagent_type") or "unknown",
+                "description": m.get("description"),
+                "status": m.get("status"),
+                "duration_ms": m.get("duration_ms"),
+                "tool_calls": m.get("tool_calls"),
+                "turns": m.get("turns"),
+                "model": m.get("effective_model_id"),
+                "child_session_id": m.get("child_session_id"),
+            })
+    except Exception:
+        pass
+    return entries
 
 
 def _reconstruct_vscode_chat_jsonl(path) -> Dict[str, Any]:
@@ -1968,6 +2049,251 @@ def _opencode_resolve_model(val):
         return (val.get("id") or val.get("modelID") or val.get("modelId")
                 or val.get("providerID"))
     return None
+
+
+# Agents whose local logs record subagent/child-session spawns at all.
+# claude: full token rollup; cursor: spawn count only (transcripts carry no
+# usage fields); opencode/hermes: parent/child linkage between real sessions;
+# grok: subagents/<id>/meta.json spawn records, children are sibling sessions;
+# codex: child rollouts carry thread_source="subagent" + parent thread id;
+# antigravity: parent brain transcript INVOKE_SUBAGENT steps name the child
+# conversation ids. (All verified empirically by running the CLIs — see
+# DESIGN.md "probe findings".)
+_DELEGATION_CAPABLE_AGENTS = {"claude", "cursor", "opencode", "hermes",
+                              "grok", "codex", "antigravity"}
+
+
+# content is JSON-escaped inside the INVOKE_SUBAGENT step record, so the quote
+# before the uuid may appear as \" in the raw line.
+_AG_CONVERSATION_ID_RE = re.compile(
+    r'conversationId\\?["\']?\s*:\s*\\?["\']'
+    r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})')
+
+
+def _antigravity_subagent_children(sid: str) -> List[str]:
+    """Child conversation ids spawned by an Antigravity session, from the
+    INVOKE_SUBAGENT steps in its brain transcript. Empty when none/no transcript."""
+    kids: List[str] = []
+    for brain_dir in ANTIGRAVITY_BRAIN_DIRS:
+        tpath = brain_dir / sid / ".system_generated" / "logs" / "transcript.jsonl"
+        try:
+            if not tpath.exists():
+                continue
+            with open(tpath, "r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    if "INVOKE_SUBAGENT" not in line:
+                        continue
+                    for cid in _AG_CONVERSATION_ID_RE.findall(line):
+                        if cid != sid and cid not in kids:
+                            kids.append(cid)
+        except Exception:
+            continue
+    return kids
+
+
+def _antigravity_link_subagents(sessions: List[Dict[str, Any]]) -> None:
+    """Link Antigravity parent conversations to their spawned subagents.
+
+    `agy` supports parallel subagents; each spawn creates a full sibling
+    conversation. The parent's brain transcript
+    (brain/<id>/.system_generated/logs/transcript.jsonl) records an
+    INVOKE_SUBAGENT step whose content embeds the child's conversationId.
+    Children are already counted as their own sessions — annotation only.
+    """
+    ag = {s["id"]: s for s in sessions if s.get("agent") == "antigravity"}
+    if not ag:
+        return
+    for sid, sess in ag.items():
+        kids = _antigravity_subagent_children(sid)
+        if kids:
+            sess["child_session_ids"] = kids
+            sess["delegation"] = {"supported": True, "tokens_recorded": False,
+                                  "linked_children": len(kids)}
+            for cid in kids:
+                child = ag.get(cid)
+                if child is not None:
+                    child["parent_session_id"] = sid
+
+# Skill / slash-command invocations (Claude Code). Two structured signals:
+#   - assistant tool_use named "Skill" with input.skill = "<name>";
+#   - <command-name>/<name></command-name> tags echoed into user lines.
+# The tag also fires for built-in CLI commands (/model, /usage, ...) which are
+# NOT skills — counting those would drown real skill usage in noise.
+_COMMAND_NAME_RE = re.compile(r"<command-name>/?([\w.:-]+)</command-name>")
+_BUILTIN_CLI_COMMANDS = {
+    "add-dir", "agents", "bashes", "bug", "clear", "compact", "config",
+    "context", "cost", "doctor", "exit", "export", "fast", "help", "hooks",
+    "ide", "install-github-app", "login", "logout", "mcp", "memory",
+    "migrate-installer", "model", "output-style", "permissions", "plan", "plugin",
+    "privacy-settings", "quit", "release-notes", "resume", "rewind", "status",
+    "statusline", "terminal-setup", "theme", "todos", "upgrade", "usage", "vim",
+}
+
+
+# Codex records no structured skill event (verified on 0.136 by invoking a
+# sample skill): activation shows up only as the agent READING the skill's
+# SKILL.md through a tool call. The path inside function_call arguments is the
+# one reliable breadcrumb — match ".../skills/<name>/SKILL.md" (either slash).
+_CODEX_SKILL_RE = re.compile(r'skills[/\\]+([\w.-]+)[/\\]+SKILL\.md')
+
+
+def _count_tool(tool_counts: Dict[str, int], name) -> None:
+    if name:
+        tool_counts[name] = tool_counts.get(name, 0) + 1
+
+
+def _mcp_usage_from_counts(tool_counts: Dict[str, int]) -> Dict[str, Dict[str, int]]:
+    """Group MCP tool-call counts by server. Non-MCP names skipped.
+
+    Naming conventions differ per agent (both verified in real logs):
+      - claude/cursor/qwen-style: mcp__<server>__<tool>  (double underscore)
+      - gemini-style: mcp_<server>_<tool>, sometimes wrapped as
+        default_api:mcp_<server>_<tool>; servers may contain dashes
+        (local-server) so only the FIRST underscore after the server splits.
+    """
+    out: Dict[str, Dict[str, int]] = {}
+    for name, n in tool_counts.items():
+        if not isinstance(name, str):
+            continue
+        raw = name
+        if raw.startswith("default_api:"):
+            raw = raw[len("default_api:"):]
+        server_name = tool = None
+        if raw.startswith("mcp__"):
+            parts = raw.split("__", 2)
+            if len(parts) == 3 and parts[1] and parts[2]:
+                server_name, tool = parts[1], parts[2]
+        elif raw.startswith("mcp_"):
+            rest = raw[len("mcp_"):]
+            if "_" in rest:
+                server_name, tool = rest.split("_", 1)
+        if not server_name or not tool:
+            continue
+        server = out.setdefault(server_name, {})
+        server[tool] = server.get(tool, 0) + n
+    return out
+
+
+def _attach_tool_usage(sess: Dict[str, Any], tool_counts: Dict[str, int],
+                       skill_counts: Optional[Dict[str, int]] = None) -> None:
+    """Attach tool_counts / mcp_usage / skills_used to a session dict (only when
+    non-empty, so agents without the signal simply lack the keys)."""
+    if tool_counts:
+        sess["tool_counts"] = tool_counts
+        mcp = _mcp_usage_from_counts(tool_counts)
+        if mcp:
+            sess["mcp_usage"] = mcp
+    if skill_counts:
+        sess["skills_used"] = [
+            {"name": k, "count": v}
+            for k, v in sorted(skill_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+        ]
+
+
+def _claude_subagent_usage(session_file: Path, sid: str) -> Optional[Dict[str, Any]]:
+    """Roll up subagent (Task/Agent tool) usage for one Claude Code session.
+
+    Claude Code writes each spawned subagent's full transcript to
+      <project-dir>/<sessionId>/subagents/agent-<agentId>.jsonl
+    with a sibling agent-<agentId>.meta.json {agentType, description, toolUseId}.
+    These files are NOT sessions — their usage is counted nowhere else, so this
+    rollup is the only place it surfaces (count-once invariant: the parent's own
+    token fields stay untouched; delegated usage is a separate bucket).
+
+    Each subagent runs its own context and often a DIFFERENT model than the
+    parent (e.g. Explore on Haiku under an Opus session), so cost is computed
+    per file with that file's model. Cache semantics match the main scanner:
+    cached = high-water-mark of cache_read per transcript, cache writes are
+    billed per event and accumulate.
+
+    Returns None when the session has no subagents/ dir; otherwise
+    {spawn_count, subagents: [...], totals: {...}, cost}.
+    """
+    sub_dir = session_file.parent / sid / "subagents"
+    try:
+        if not sub_dir.is_dir():
+            return None
+    except Exception:
+        return None
+    entries: List[Dict[str, Any]] = []
+    for f in sorted(sub_dir.glob("agent-*.jsonl")):
+        agent_id = f.stem[len("agent-"):]
+        agent_type = None
+        description = None
+        tool_use_id = None
+        try:
+            with open(f.with_name(f.stem + ".meta.json"), "r", encoding="utf-8") as mf:
+                meta = json.load(mf)
+            if isinstance(meta, dict):
+                agent_type = meta.get("agentType")
+                description = meta.get("description")
+                tool_use_id = meta.get("toolUseId")
+        except Exception:
+            pass
+        tokens = {"input": 0, "output": 0, "cached": 0, "cache_creation": 0,
+                  "cache_creation_1h": 0, "total": 0}
+        model = None
+        try:
+            with open(f, "r", encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    try:
+                        data = json.loads(line)
+                    except Exception:
+                        continue
+                    if data.get("type") != "assistant":
+                        continue
+                    msg = data.get("message", {}) if isinstance(data.get("message"), dict) else {}
+                    m = msg.get("model")
+                    if m and m != "<synthetic>" and not model:
+                        model = m
+                    # Fallback identity when meta.json is missing/corrupt.
+                    if not agent_type and data.get("attributionAgent"):
+                        agent_type = data.get("attributionAgent")
+                    usage = msg.get("usage", {}) if isinstance(msg.get("usage"), dict) else {}
+                    if not usage:
+                        continue
+                    cr = usage.get("cache_read_input_tokens", 0) or 0
+                    cc = usage.get("cache_creation_input_tokens", 0) or 0
+                    cc_1h = (usage.get("cache_creation", {}) or {}).get("ephemeral_1h_input_tokens", 0) or 0
+                    tokens["input"] += usage.get("input_tokens", 0) or 0
+                    tokens["output"] += usage.get("output_tokens", 0) or 0
+                    tokens["cached"] = max(tokens["cached"], cr)
+                    tokens["cache_creation"] += cc
+                    tokens["cache_creation_1h"] += cc_1h
+        except Exception:
+            continue
+        tokens["total"] = tokens["input"] + tokens["output"] + tokens["cached"]
+        cost = calculate_cost(model, tokens["input"], tokens["output"], tokens["cached"],
+                              cache_creation_tokens=tokens["cache_creation"],
+                              cache_creation_1h_tokens=tokens["cache_creation_1h"])
+        entries.append({
+            "agent_id": agent_id,
+            "agent_type": agent_type or "unknown",
+            "description": description,
+            "tool_use_id": tool_use_id,
+            "model": model,
+            "tokens": tokens,
+            "cost": cost,
+        })
+    if not entries:
+        return None
+    totals = {"input": 0, "output": 0, "cached": 0, "cache_creation": 0,
+              "cache_creation_1h": 0, "total": 0}
+    by_type: Dict[str, Dict[str, Any]] = {}
+    for e in entries:
+        for k in totals:
+            totals[k] += e["tokens"][k]
+        bt = by_type.setdefault(e["agent_type"], {"count": 0, "total": 0, "cost": 0.0})
+        bt["count"] += 1
+        bt["total"] += e["tokens"]["total"]
+        bt["cost"] = round(bt["cost"] + (e["cost"] or 0), 6)
+    return {
+        "spawn_count": len(entries),
+        "subagents": entries,
+        "totals": totals,
+        "by_type": by_type,
+        "cost": round(sum(e["cost"] or 0 for e in entries), 6),
+    }
 
 
 def _scan_sessions_sync():
@@ -2083,6 +2409,8 @@ def _scan_sessions_sync():
 
                 # pending_edit_tool_ids: Set[str] = set()  # quality signals (commented out)
                 # prior_edit_failed = False
+                tool_counts: Dict[str, int] = {}
+                skill_counts: Dict[str, int] = {}
                 try:
                     with open(session_file, "r", encoding="utf-8", errors="replace") as f:
                         for line in f:
@@ -2113,6 +2441,11 @@ def _scan_sessions_sync():
                                     if item.get("type") == "tool_use":
                                         tool = item.get("name")
                                         if tool not in sess["mcp_tools"]: sess["mcp_tools"].append(tool)
+                                        _count_tool(tool_counts, tool)
+                                        if tool == "Skill":
+                                            skill = (item.get("input") or {}).get("skill")
+                                            if skill:
+                                                skill_counts[skill] = skill_counts.get(skill, 0) + 1
                                         if tool == "ExitPlanMode":
                                             plan_text = (item.get("input") or {}).get("plan") or ""
                                             if plan_text:
@@ -2135,6 +2468,11 @@ def _scan_sessions_sync():
                                 u_content = u_msg.get("content", "")
                                 if "/plan" in str(u_content):
                                     sess["has_plan"] = True
+                                # Slash-command echoes: count skill invocations,
+                                # skip built-in CLI commands (/model, /usage, ...).
+                                for cmd in _COMMAND_NAME_RE.findall(str(u_content)):
+                                    if cmd not in _BUILTIN_CLI_COMMANDS:
+                                        skill_counts[cmd] = skill_counts.get(cmd, 0) + 1
                                 # Quality signals (retry chain tracking) commented out:
                                 # if isinstance(u_content, list):
                                 #     for it in u_content:
@@ -2145,10 +2483,29 @@ def _scan_sessions_sync():
                                 #     prior_edit_failed = False
                                 #     pending_edit_tool_ids = set()
                 except Exception: continue
+                _attach_tool_usage(sess, tool_counts, skill_counts)
+                # Subagent (Task/Agent) rollup — separate "delegated" bucket so the
+                # parent's own token fields stay exactly as before. Full per-subagent
+                # breakdown is served by /sessions/{id}/delegation, the list carries
+                # only the summary.
+                deleg = _claude_subagent_usage(session_file, sid)
+                sess["delegation"] = {
+                    "supported": True,
+                    "tokens_recorded": True,
+                    "spawn_count": deleg["spawn_count"] if deleg else 0,
+                    "delegated_total": deleg["totals"]["total"] if deleg else 0,
+                }
+                if deleg:
+                    sess["delegation"]["by_type"] = deleg["by_type"]
+                    sess["tokens"]["delegated_input"] = deleg["totals"]["input"]
+                    sess["tokens"]["delegated_output"] = deleg["totals"]["output"]
+                    sess["tokens"]["delegated_cached"] = deleg["totals"]["cached"]
+                    sess["tokens"]["delegated_cache_creation"] = deleg["totals"]["cache_creation"]
+                    sess["delegated_cost"] = deleg["cost"]
         sessions.extend(claude_sessions.values())
     # 2. Codex
     codex_index = CODEX_DIR / "session_index.jsonl"
-    if codex_index.exists():
+    if codex_index.exists() or (CODEX_DIR / "sessions").is_dir():
         codex_sessions = {}
         # Pre-index Codex rollout files
         codex_file_map = {}
@@ -2173,6 +2530,20 @@ def _scan_sessions_sync():
                             codex_sessions[sid] = {"id": sid, "agent": "codex", "project": "unknown", "timestamp": ts, "text": data.get("thread_name"), "tokens": {"input": 0, "output": 0, "cached": 0, "total": 0}, "mcp_tools": [], "has_plan": False, "plans": [], "model": None, "artifacts": []}
                     except Exception: continue
         except Exception: pass
+
+        # The index is no longer maintained by recent Codex versions (observed
+        # frozen since codex 0.13x): exec runs and subagent threads never get
+        # an entry, and neither do new interactive sessions. Discover every
+        # session from the rollout files themselves; the index above only
+        # contributes nicer thread names for legacy entries.
+        for sid, files in codex_file_map.items():
+            if sid in codex_sessions:
+                continue
+            try:
+                ts = max(_file_mtime_utc(f) for f in files)
+            except Exception:
+                ts = _now()
+            codex_sessions[sid] = {"id": sid, "agent": "codex", "project": "unknown", "timestamp": ts, "text": None, "tokens": {"input": 0, "output": 0, "cached": 0, "total": 0}, "mcp_tools": [], "has_plan": False, "plans": [], "model": None, "artifacts": []}
         
         # Process the 100 most recent sessions
         for sid, sess in sorted(codex_sessions.items(), key=lambda kv: kv[1]["timestamp"], reverse=True)[:100]:
@@ -2192,6 +2563,24 @@ def _scan_sessions_sync():
                                     sess["model"] = data["payload"].get("model")
                                 if not sess.get("_provider"):
                                     sess["_provider"] = data["payload"].get("model_provider")
+                                # Subagent threads (multi_agent feature): the child
+                                # rollout's session_meta carries thread_source ==
+                                # "subagent" plus source.subagent.thread_spawn with
+                                # the parent thread id, depth, role and nickname.
+                                # forked_from_id alone is NOT enough — user-initiated
+                                # `codex fork` sets it too with thread_source "user".
+                                _src = data["payload"].get("source")
+                                _spawn = (_src.get("subagent") or {}).get("thread_spawn") if isinstance(_src, dict) else None
+                                if data["payload"].get("thread_source") == "subagent" or _spawn:
+                                    _spawn = _spawn or {}
+                                    _pid = _spawn.get("parent_thread_id") or data["payload"].get("forked_from_id")
+                                    if _pid:
+                                        sess["parent_session_id"] = _pid
+                                    sess["subagent_info"] = {
+                                        "role": _spawn.get("agent_role") or data["payload"].get("agent_role"),
+                                        "nickname": _spawn.get("agent_nickname") or data["payload"].get("agent_nickname"),
+                                        "depth": _spawn.get("depth"),
+                                    }
                             if data.get("type") == "turn_context" and not sess.get("model"):
                                 sess["model"] = data.get("payload", {}).get("model")
                             if data.get("type") == "event_msg":
@@ -2203,6 +2592,13 @@ def _scan_sessions_sync():
                                         event_day = _aware(event_dt).strftime("%Y-%m-%d")
                                     except Exception: pass
 
+                                # Sessions discovered from rollouts (not the stale
+                                # index) have no thread_name; first user prompt is
+                                # the natural display.
+                                if not sess.get("text") and (data.get("payload") or {}).get("type") == "user_message":
+                                    _um = data["payload"].get("message")
+                                    if isinstance(_um, str) and _um.strip():
+                                        sess["text"] = _um.strip()[:120]
                                 usage = ((data.get("payload") or {}).get("info") or {}).get("total_token_usage") or {}
                                 if usage:
                                     # OpenAI/Codex semantics differ from Anthropic:
@@ -2234,6 +2630,12 @@ def _scan_sessions_sync():
                                 if data.get("payload", {}).get("type") == "function_call":
                                     tool = data["payload"].get("name")
                                     if tool not in sess["mcp_tools"]: sess["mcp_tools"].append(tool)
+                                    _count_tool(sess.setdefault("tool_counts", {}), tool)
+                                    # Skill activation breadcrumb: the agent reads
+                                    # <skills-dir>/<name>/SKILL.md (no structured event).
+                                    for _skm in _CODEX_SKILL_RE.finditer(data["payload"].get("arguments") or ""):
+                                        _sc = sess.setdefault("_skill_counts", {})
+                                        _sc[_skm.group(1)] = _sc.get(_skm.group(1), 0) + 1
                                     if tool == "update_plan":
                                         try:
                                             args = json.loads(data["payload"].get("arguments") or "{}")
@@ -2268,13 +2670,31 @@ def _scan_sessions_sync():
             if not s.get("model") and s.get("_provider"):
                 s["model"] = s["_provider"]
             s.pop("_provider", None)
+            mcp = _mcp_usage_from_counts(s.get("tool_counts") or {})
+            if mcp:
+                s["mcp_usage"] = mcp
+            _sc = s.pop("_skill_counts", None)
+            if _sc:
+                s["skills_used"] = [{"name": k, "count": v}
+                                    for k, v in sorted(_sc.items(), key=lambda kv: (-kv[1], kv[0]))]
+        # Annotate parents of subagent threads (children are full sessions with
+        # their own usage — linkage only, never re-summed).
+        for s in codex_sessions.values():
+            pid = s.get("parent_session_id")
+            if pid and pid in codex_sessions:
+                codex_sessions[pid].setdefault("child_session_ids", []).append(s["id"])
+        for s in codex_sessions.values():
+            kids = s.get("child_session_ids") or []
+            if kids:
+                s["delegation"] = {"supported": True, "tokens_recorded": False,
+                                   "linked_children": len(kids)}
         sessions.extend(codex_sessions.values())
 
     # 3 & 7. Gemini & Antigravity
     gemini_projects_file = GEMINI_DIR / "projects.json"
     if gemini_projects_file.exists():
         try:
-            with open(gemini_projects_file, "r") as f:
+            with open(gemini_projects_file, "r", encoding="utf-8", errors="replace") as f:
                 pj_data = json.load(f).get("projects", {})
                 gemini_slugs = set(pj_data.values())
                 gemini_slug_to_path = {v: k for k, v in pj_data.items()}
@@ -2332,6 +2752,8 @@ def _scan_sessions_sync():
                                 ts = _aware(datetime.fromisoformat(data.get("lastUpdated").replace('Z', '+00:00'))) if data.get("lastUpdated") else _file_mtime_utc(cf)
                                 tokens = {"input": 0, "output": 0, "cached": 0, "total": 0}
                                 mcp_tools = []; has_plan = False; first_msg = ""; plans = []
+                                tool_counts: Dict[str, int] = {}
+                                skill_counts: Dict[str, int] = {}
                                 has_user = False
                                 for msg in data.get("messages", []):
                                     if msg.get("type") == "user":
@@ -2346,6 +2768,12 @@ def _scan_sessions_sync():
                                     if "toolCalls" in msg:
                                         for tc in msg["toolCalls"]:
                                             if tc.get("name") not in mcp_tools: mcp_tools.append(tc.get("name"))
+                                            _count_tool(tool_counts, tc.get("name"))
+                                            # Gemini's structured skill signal.
+                                            if tc.get("name") == "activate_skill":
+                                                _sk = (tc.get("args") or {}).get("name")
+                                                if _sk:
+                                                    skill_counts[_sk] = skill_counts.get(_sk, 0) + 1
                                             if tc.get("name") == "exit_plan_mode":
                                                 plan_text = ""
                                                 pp = (tc.get("args") or {}).get("plan_path")
@@ -2383,7 +2811,9 @@ def _scan_sessions_sync():
                                 tokens["cost"] = calculate_cost(model, tokens["input"], tokens["output"], tokens["cached"])
                                 if sid in _seen_antigravity: continue
                                 _seen_antigravity.add(sid)
-                                sessions.append({"id": sid, "agent": effective_agent, "project": project_path, "timestamp": ts, "display": first_msg[:100], "tokens": tokens, "mcp_tools": mcp_tools, "has_plan": has_plan, "plans": plans, "model": model, "artifacts": artifacts, "antigravity_source": _ag_surface.get(sid), "cost": tokens["cost"]})
+                                _g_sess = {"id": sid, "agent": effective_agent, "project": project_path, "timestamp": ts, "display": first_msg[:100], "tokens": tokens, "mcp_tools": mcp_tools, "has_plan": has_plan, "plans": plans, "model": model, "artifacts": artifacts, "antigravity_source": _ag_surface.get(sid), "cost": tokens["cost"]}
+                                _attach_tool_usage(_g_sess, tool_counts, skill_counts)
+                                sessions.append(_g_sess)
                         except Exception: continue
                 # Scan logs.json for Antigravity sessions that have no chat JSON file
                 _logs_file = tmp_dir / "logs.json"
@@ -2542,7 +2972,7 @@ def _scan_sessions_sync():
                         sid = cf.stem; mcp_tools = []; has_plan = False; first_msg = ""; plans = []
                         tokens = {"input": 0, "output": 0, "cached": 0, "total": 0}
                         project_path = "unknown"; last_ts = _file_mtime_utc(cf); model = None
-                        artifacts = []
+                        artifacts = []; tool_counts = {}; q_skill_counts = {}
                         with open(cf, "r", encoding="utf-8", errors="replace") as f:
                             for line in f:
                                 try:
@@ -2569,6 +2999,12 @@ def _scan_sessions_sync():
                                         for item in data.get("message", {}).get("content", []):
                                             if item.get("type") == "tool_use":
                                                 if item.get("name") not in mcp_tools: mcp_tools.append(item.get("name"))
+                                                _count_tool(tool_counts, item.get("name"))
+                                                # qwen is a gemini fork; same structured skill signal.
+                                                if item.get("name") == "activate_skill":
+                                                    _sk = (item.get("input") or {}).get("name")
+                                                    if _sk:
+                                                        q_skill_counts[_sk] = q_skill_counts.get(_sk, 0) + 1
                                             if item.get("type") == "thinking":
                                                 t_text = item.get("thinking", "")
                                                 if "plan" in t_text.lower() and len(t_text) > 100:
@@ -2577,7 +3013,9 @@ def _scan_sessions_sync():
                                 except Exception: continue
                         tokens["total"] = tokens["input"] + tokens["output"] + tokens["cached"]
                         tokens["cost"] = calculate_cost(model, tokens["input"], tokens["output"], tokens["cached"], cache_creation_tokens=tokens.get("cache_creation", 0), cache_creation_1h_tokens=tokens.get("cache_creation_1h", 0))
-                        sessions.append({"id": sid, "agent": "qwen", "project": project_path, "timestamp": last_ts, "display": first_msg[:100], "tokens": tokens, "mcp_tools": mcp_tools, "has_plan": has_plan, "plans": plans, "model": model, "artifacts": artifacts, "cost": tokens["cost"]})
+                        _q_sess = {"id": sid, "agent": "qwen", "project": project_path, "timestamp": last_ts, "display": first_msg[:100], "tokens": tokens, "mcp_tools": mcp_tools, "has_plan": has_plan, "plans": plans, "model": model, "artifacts": artifacts, "cost": tokens["cost"]}
+                        _attach_tool_usage(_q_sess, tool_counts, q_skill_counts)
+                        sessions.append(_q_sess)
                     except Exception: continue
 
     # 5. Vibe
@@ -2604,7 +3042,7 @@ def _scan_sessions_sync():
         if CURSOR_STORAGE.exists():
             for ws in CURSOR_STORAGE.glob("*/workspace.json"):
                 try:
-                    with open(ws, "r") as f:
+                    with open(ws, "r", encoding="utf-8", errors="replace") as f:
                         data = json.load(f)
                         folder = data.get("folder")
                         if folder:
@@ -2644,6 +3082,7 @@ def _scan_sessions_sync():
                                 first_msg = ""
                                 tokens = {"input": 0, "output": 0, "cached": 0, "total": 0}
                                 mcp_tools = []
+                                tool_counts = {}
                                 subagents = []
                                 has_plan = False
                                 plans = []
@@ -2677,6 +3116,7 @@ def _scan_sessions_sync():
                                                 if item.get("type") == "tool_use":
                                                     name = item.get("name")
                                                     if name not in mcp_tools: mcp_tools.append(name)
+                                                    _count_tool(tool_counts, name)
                                                     if name == "Subagent":
                                                         sub_input = item.get("input") or {}
                                                         sub_name = sub_input.get("name") or sub_input.get("subagent_type")
@@ -2689,7 +3129,18 @@ def _scan_sessions_sync():
                                                         plans.append({"session_id": sid, "agent": "cursor", "timestamp": mtime, "content": t_text})
                                 tokens["total"] = tokens["input"] + tokens["output"] + tokens["cached"]
                                 tokens["cost"] = calculate_cost(model, tokens["input"], tokens["output"], tokens["cached"], cache_creation_tokens=tokens.get("cache_creation", 0), cache_creation_1h_tokens=tokens.get("cache_creation_1h", 0))
-                                sessions.append({"id": sid, "agent": "cursor", "project": project_path, "timestamp": mtime, "display": first_msg[:100], "tokens": tokens, "mcp_tools": mcp_tools, "subagents": subagents, "has_plan": has_plan, "plans": plans, "model": model, "artifacts": artifacts, "cost": tokens["cost"]})
+                                # Cursor writes subagent transcripts to <sid>/subagents/
+                                # but they carry NO usage fields (verified), so we can
+                                # only count spawns — never estimate their tokens.
+                                spawn_count = 0
+                                try:
+                                    spawn_count = sum(1 for _ in (trans_dir / "subagents").glob("*.jsonl"))
+                                except Exception: pass
+                                delegation = {"supported": True, "tokens_recorded": False,
+                                              "spawn_count": max(spawn_count, len(subagents))}
+                                _c_sess = {"id": sid, "agent": "cursor", "project": project_path, "timestamp": mtime, "display": first_msg[:100], "tokens": tokens, "mcp_tools": mcp_tools, "subagents": subagents, "has_plan": has_plan, "plans": plans, "model": model, "artifacts": artifacts, "cost": tokens["cost"], "delegation": delegation}
+                                _attach_tool_usage(_c_sess, tool_counts)
+                                sessions.append(_c_sess)
                             except Exception: continue
 
     # 7. Copilot
@@ -2699,7 +3150,7 @@ def _scan_sessions_sync():
                 workspace_json = ws_folder.parent / "workspace.json"
                 project_path = "unknown"
                 if workspace_json.exists():
-                    with open(workspace_json, "r") as f:
+                    with open(workspace_json, "r", encoding="utf-8", errors="replace") as f:
                         wj = json.load(f); folder_url = wj.get("folder")
                         if folder_url: project_path = unquote(folder_url.replace("file://", ""))
                 # VS Code ~1.100+ switched session files from <id>.json (single
@@ -2817,7 +3268,7 @@ def _scan_sessions_sync():
     if OPENCODE_DB.exists():
         try:
             # immutable=1 so we don't block the live TUI process's write lock
-            uri = f"file:{OPENCODE_DB}?mode=ro"
+            uri = _sqlite_ro_uri(OPENCODE_DB)
             conn = sqlite3.connect(uri, uri=True, timeout=1.0)
             conn.row_factory = sqlite3.Row
             try:
@@ -2830,7 +3281,14 @@ def _scan_sessions_sync():
                 except Exception:
                     _sess_cols = set()
                 _has_sess_model = "model" in _sess_cols
-                rows = conn.execute("SELECT id, directory, title, time_created, time_updated FROM session").fetchall()
+                # parent_id links child (delegated) sessions to their parent. Children
+                # are full sessions already counted in aggregates, so hierarchy here is
+                # annotation-only — never re-summed (count-once invariant).
+                _has_parent = "parent_id" in _sess_cols
+                _parent_sel = ", parent_id" if _has_parent else ""
+                oc_by_id: Dict[str, Dict[str, Any]] = {}
+                oc_parent_of: Dict[str, str] = {}
+                rows = conn.execute(f"SELECT id, directory, title, time_created, time_updated{_parent_sel} FROM session").fetchall()
                 for srow in rows:
                     sid = srow["id"]
                     ts = datetime.fromtimestamp((srow["time_updated"] or srow["time_created"] or 0) / 1000, tz=timezone.utc)
@@ -2840,6 +3298,7 @@ def _scan_sessions_sync():
                     models_used: List[str] = []   # distinct models, in first-seen order (#39)
                     first_user = ""
                     mcp_tools: List[str] = []
+                    oc_tool_counts: Dict[str, int] = {}
                     has_plan = False
                     plans: List[Dict[str, Any]] = []
                     # Model + tokens from assistant messages
@@ -2902,6 +3361,7 @@ def _scan_sessions_sync():
                         if ptype == "tool":
                             tname = pdata.get("tool")
                             if tname and tname not in mcp_tools: mcp_tools.append(tname)
+                            _count_tool(oc_tool_counts, tname)
                         if ptype == "step-finish":
                             tk = pdata.get("tokens") or {}
                             cache = tk.get("cache") or {}
@@ -2922,14 +3382,32 @@ def _scan_sessions_sync():
                         has_plan = True
                         plan_text = "\n".join(f"- [{r['status']}] {r['content']}" for r in todo_rows)
                         plans.append({"session_id": sid, "agent": "opencode", "timestamp": ts, "content": plan_text})
-                    sessions.append({
+                    oc_sess = {
                         "id": sid, "agent": "opencode", "project": apply_alias(srow["directory"] or "unknown"), "timestamp": ts,
                         "display": display, "tokens": tokens, "mcp_tools": mcp_tools,
                         "has_plan": has_plan, "plans": plans, "model": model,
                         "models_used": models_used, "artifacts": [],
                         "provider": provider_id,  # expose runtime (e.g. "ollama") so analytics can detect local sessions
                         "cost": tokens["cost"],
-                    })
+                    }
+                    if _has_parent and srow["parent_id"]:
+                        oc_sess["parent_session_id"] = srow["parent_id"]
+                        oc_parent_of[sid] = srow["parent_id"]
+                    _attach_tool_usage(oc_sess, oc_tool_counts)
+                    oc_by_id[sid] = oc_sess
+                    sessions.append(oc_sess)
+                # Annotate parents with their children (display-only; child tokens
+                # are already counted as their own sessions).
+                for child_id, parent_id in oc_parent_of.items():
+                    parent = oc_by_id.get(parent_id)
+                    if parent is None:
+                        continue
+                    parent.setdefault("child_session_ids", []).append(child_id)
+                for oc_sess in oc_by_id.values():
+                    kids = oc_sess.get("child_session_ids") or []
+                    if kids:
+                        oc_sess["delegation"] = {"supported": True, "tokens_recorded": False,
+                                                 "linked_children": len(kids)}
             finally:
                 conn.close()
         except Exception:
@@ -2940,9 +3418,10 @@ def _scan_sessions_sync():
 
     # 9. Hermes Agent (SQLite: sessions / messages, pre-aggregated tokens)
     hermes_cwd_map = _hermes_cwd_by_session() if _hermes_dbs() else {}
+    hermes_by_id: Dict[str, Dict[str, Any]] = {}
     for db_path in _hermes_dbs():
         try:
-            uri = f"file:{db_path}?mode=ro"
+            uri = _sqlite_ro_uri(db_path)
             conn = sqlite3.connect(uri, uri=True, timeout=1.0)
             conn.row_factory = sqlite3.Row
             try:
@@ -3015,13 +3494,15 @@ def _scan_sessions_sync():
                     if fu:
                         first_user = fu["content"] or ""
                     display = (srow["title"] or first_user)[:100]
-                    # Distinct tool names used in this session
-                    mcp_tools = [r[0] for r in conn.execute(
-                        "SELECT DISTINCT tool_name FROM messages "
-                        "WHERE session_id=? AND tool_name IS NOT NULL AND tool_name != ''",
-                        (sid,)).fetchall()]
+                    # Tool names + call counts used in this session
+                    h_tool_counts = {r[0]: r[1] for r in conn.execute(
+                        "SELECT tool_name, COUNT(*) FROM messages "
+                        "WHERE session_id=? AND tool_name IS NOT NULL AND tool_name != '' "
+                        "GROUP BY tool_name",
+                        (sid,)).fetchall()}
+                    mcp_tools = list(h_tool_counts.keys())
                     cwd = hermes_cwd_map.get(sid)
-                    sessions.append({
+                    hermes_by_id[sid] = {
                         "id": sid, "agent": "hermes",
                         "project": apply_alias(cwd or "unknown"),
                         "project_inferred": cwd is not None,
@@ -3035,11 +3516,34 @@ def _scan_sessions_sync():
                         "provider": srow["billing_provider"],
                         "endpoint": srow["billing_base_url"],
                         "tok_per_sec": _measured_tps,
-                    })
+                    }
+                    _attach_tool_usage(hermes_by_id[sid], h_tool_counts)
+                    sessions.append(hermes_by_id[sid])
             finally:
                 conn.close()
         except Exception:
             pass
+    # Hermes hierarchy: children carry parent_session_id (pre-aggregated tokens
+    # of their own, already in totals) — annotate parents, never re-sum.
+    for h_sess in hermes_by_id.values():
+        pid = h_sess.get("parent_session_id")
+        if pid and pid in hermes_by_id:
+            hermes_by_id[pid].setdefault("child_session_ids", []).append(h_sess["id"])
+    for h_sess in hermes_by_id.values():
+        kids = h_sess.get("child_session_ids") or []
+        if kids:
+            h_sess["delegation"] = {"supported": True, "tokens_recorded": False,
+                                    "linked_children": len(kids)}
+
+    # Antigravity subagent linkage (needs the full session list to pair ids).
+    _antigravity_link_subagents(sessions)
+
+    # Every session gets an explicit delegation marker: agents whose logs carry
+    # no spawn signal report supported=False (an honest "n/a", never a fake 0).
+    # Capability is per-agent — a claude session outside the parsed top-100 is
+    # still "supported", just not scanned yet.
+    for s in sessions:
+        s.setdefault("delegation", {"supported": s.get("agent") in _DELEGATION_CAPABLE_AGENTS})
 
     # Global sort by timestamp descending
     sessions.sort(key=lambda x: x["timestamp"], reverse=True)
@@ -3569,7 +4073,7 @@ async def get_session_detail(session_id: str, agent: str):
         return events
     elif agent == "opencode":
         if not OPENCODE_DB.exists(): return {"error": "Not found"}
-        uri = f"file:{OPENCODE_DB}?mode=ro"
+        uri = _sqlite_ro_uri(OPENCODE_DB)
         conn = sqlite3.connect(uri, uri=True, timeout=1.0)
         conn.row_factory = sqlite3.Row
         try:
@@ -3611,7 +4115,7 @@ async def get_session_detail(session_id: str, agent: str):
     elif agent == "hermes":
         for db_path in _hermes_dbs():
             try:
-                uri = f"file:{db_path}?mode=ro"
+                uri = _sqlite_ro_uri(db_path)
                 conn = sqlite3.connect(uri, uri=True, timeout=1.0)
                 conn.row_factory = sqlite3.Row
                 try:
@@ -3689,6 +4193,217 @@ async def get_session_detail(session_id: str, agent: str):
     #                 })
     #             return events
     return {"error": "Invalid agent"}
+
+
+def _jsonl_events(path: Path) -> List[Dict[str, Any]]:
+    """Parse a transcript JSONL into the event list shape the trace UI expects
+    (same normalization as the claude branch of get_session_detail)."""
+    events: List[Dict[str, Any]] = []
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            try:
+                data = json.loads(line)
+            except Exception:
+                continue
+            if data.get("timestamp"):
+                try:
+                    ts = _aware(datetime.fromisoformat(data["timestamp"].replace('Z', '+00:00')))
+                    data["normalized_timestamp"] = ts.timestamp() * 1000
+                except Exception:
+                    pass
+            events.append(data)
+    return events
+
+
+_SUBAGENT_ID_RE = re.compile(r"^[\w.-]+$")
+
+
+@app.get("/sessions/{session_id}/subagents/{agent_id}/trace")
+async def session_subagent_trace(session_id: str, agent_id: str, agent: str):
+    """Raw trace of ONE subagent transcript, for the in-place drill-in viewer.
+
+    Only claude and cursor need this: their subagent transcripts are files
+    inside the parent's session dir, NOT sessions of their own (grok/codex/
+    opencode/hermes children are real sessions — fetch the normal detail
+    endpoint for those instead)."""
+    if not _SUBAGENT_ID_RE.match(agent_id or ""):
+        return {"error": "Invalid subagent id"}
+    if agent == "claude":
+        files = list(CLAUDE_DIR.glob(f"projects/**/{session_id}.jsonl"))
+        if not files:
+            return {"error": "Not found"}
+        t = files[0].parent / session_id / "subagents" / f"agent-{agent_id}.jsonl"
+        if not t.exists():
+            return {"error": "Not found"}
+        return _jsonl_events(t)
+    if agent == "cursor":
+        for pd in (CURSOR_DIR / "projects").glob("*"):
+            t = pd / "agent-transcripts" / session_id / "subagents" / f"{agent_id}.jsonl"
+            if t.exists():
+                return _jsonl_events(t)
+        return {"error": "Not found"}
+    return {"error": "Invalid agent"}
+
+
+@app.get("/sessions/{session_id}/delegation")
+async def session_delegation(session_id: str, agent: str):
+    """Per-session subagent/delegation breakdown (overlay, like hermes-overlay).
+
+    claude: full per-subagent usage + cost from <sid>/subagents/agent-*.jsonl.
+    cursor: spawn count only — its subagent transcripts carry no usage fields.
+    opencode/hermes: parent/child session linkage from their SQLite hierarchies.
+    Everything else: {"supported": False} — the agent's logs don't record spawns.
+    """
+    if agent == "claude":
+        files = list(CLAUDE_DIR.glob(f"projects/**/{session_id}.jsonl"))
+        if not files:
+            return {"error": "Not found"}
+        deleg = _claude_subagent_usage(files[0], session_id)
+        if not deleg:
+            return {"supported": True, "tokens_recorded": True, "spawn_count": 0,
+                    "subagents": [], "totals": None, "cost": 0.0}
+        return {"supported": True, "tokens_recorded": True, **deleg}
+
+    if agent == "cursor":
+        for pd in (CURSOR_DIR / "projects").glob("*"):
+            trans_dir = pd / "agent-transcripts" / session_id
+            if trans_dir.is_dir():
+                sub_files = sorted((trans_dir / "subagents").glob("*.jsonl")) if (trans_dir / "subagents").is_dir() else []
+                return {"supported": True, "tokens_recorded": False,
+                        "spawn_count": len(sub_files),
+                        "subagents": [{"agent_id": f.stem, "agent_type": "unknown",
+                                       "tokens": None, "cost": None} for f in sub_files]}
+        return {"error": "Not found"}
+
+    if agent == "opencode":
+        if not OPENCODE_DB.exists():
+            return {"error": "Not found"}
+        try:
+            conn = sqlite3.connect(_sqlite_ro_uri(OPENCODE_DB), uri=True, timeout=1.0)
+            try:
+                cols = {r[1] for r in conn.execute("PRAGMA table_info(session)")}
+                if "parent_id" not in cols:
+                    return {"supported": False}
+                row = conn.execute("SELECT parent_id FROM session WHERE id=?", (session_id,)).fetchone()
+                if row is None:
+                    return {"error": "Not found"}
+                children = [r[0] for r in conn.execute(
+                    "SELECT id FROM session WHERE parent_id=?", (session_id,))]
+                return {"supported": True, "tokens_recorded": False,
+                        "parent_session_id": row[0],
+                        "child_session_ids": children,
+                        "linked_children": len(children)}
+            finally:
+                conn.close()
+        except Exception:
+            return {"error": "Not found"}
+
+    if agent == "hermes":
+        for db_path in _hermes_dbs():
+            try:
+                conn = sqlite3.connect(_sqlite_ro_uri(db_path), uri=True, timeout=1.0)
+                try:
+                    row = conn.execute("SELECT parent_session_id FROM sessions WHERE id=?", (session_id,)).fetchone()
+                    if row is None:
+                        continue
+                    children = [r[0] for r in conn.execute(
+                        "SELECT id FROM sessions WHERE parent_session_id=?", (session_id,))]
+                    return {"supported": True, "tokens_recorded": False,
+                            "parent_session_id": row[0],
+                            "child_session_ids": children,
+                            "linked_children": len(children)}
+                finally:
+                    conn.close()
+            except Exception:
+                continue
+        return {"error": "Not found"}
+
+    if agent == "grok":
+        for bucket in GROK_SESSIONS_DIR.glob("*"):
+            sess_dir = bucket / session_id
+            if not (sess_dir.is_dir() and (sess_dir / GROK_SUMMARY).exists()):
+                continue
+            spawns = _grok_subagent_meta(sess_dir)
+            # Parent linkage: the parent's spawn meta names this session as child.
+            parent_id = None
+            try:
+                for other in bucket.iterdir():
+                    if not other.is_dir() or other.name == session_id:
+                        continue
+                    for m in _grok_subagent_meta(other):
+                        if m.get("child_session_id") == session_id:
+                            parent_id = other.name
+                            break
+                    if parent_id:
+                        break
+            except Exception:
+                pass
+            return {"supported": True, "tokens_recorded": False,
+                    "spawn_count": len(spawns), "subagents": spawns,
+                    "parent_session_id": parent_id,
+                    "child_session_ids": [m["child_session_id"] for m in spawns
+                                          if m.get("child_session_id")],
+                    "linked_children": len(spawns)}
+        return {"error": "Not found"}
+
+    if agent == "codex":
+        def _spawn_meta(path):
+            """(payload, thread_spawn) from a rollout's session_meta first line."""
+            try:
+                with open(path, "r", encoding="utf-8", errors="replace") as f:
+                    first = json.loads(f.readline())
+            except Exception:
+                return None, None
+            p = first.get("payload") or {}
+            src = p.get("source")
+            spawn = (src.get("subagent") or {}).get("thread_spawn") if isinstance(src, dict) else None
+            if spawn is None and p.get("thread_source") == "subagent":
+                spawn = {}
+            return p, spawn
+
+        own = list(CODEX_DIR.glob(f"sessions/**/rollout-*{session_id}*.jsonl"))
+        if not own:
+            return {"error": "Not found"}
+        payload, spawn = _spawn_meta(own[0])
+        parent_id = None
+        info = None
+        if spawn is not None:
+            parent_id = spawn.get("parent_thread_id") or (payload or {}).get("forked_from_id")
+            info = {"role": spawn.get("agent_role") or (payload or {}).get("agent_role"),
+                    "nickname": spawn.get("agent_nickname") or (payload or {}).get("agent_nickname"),
+                    "depth": spawn.get("depth")}
+        children = []
+        try:
+            for f in (CODEX_DIR / "sessions").rglob("rollout-*.jsonl"):
+                if session_id in f.name:
+                    continue
+                p, sp = _spawn_meta(f)
+                if sp is None:
+                    continue
+                pid = sp.get("parent_thread_id") or (p or {}).get("forked_from_id")
+                if pid != session_id:
+                    continue
+                parts = f.stem.split("-")
+                children.append({
+                    "child_session_id": "-".join(parts[-5:]) if len(parts) >= 6 else f.stem,
+                    "agent_role": sp.get("agent_role") or (p or {}).get("agent_role"),
+                    "nickname": sp.get("agent_nickname") or (p or {}).get("agent_nickname"),
+                })
+        except Exception:
+            pass
+        return {"supported": True, "tokens_recorded": False,
+                "parent_session_id": parent_id, "subagent_info": info,
+                "subagents": children,
+                "child_session_ids": [c["child_session_id"] for c in children],
+                "linked_children": len(children)}
+
+    if agent == "antigravity":
+        kids = _antigravity_subagent_children(session_id)
+        return {"supported": True, "tokens_recorded": False,
+                "child_session_ids": kids, "linked_children": len(kids)}
+
+    return {"supported": False}
+
 
 @app.get("/projects")
 async def get_projects(include_hidden: bool = False):
@@ -4018,10 +4733,120 @@ async def get_analytics():
     total_input = sum(a["input"] for a in by_agent.values())
     total_output = sum(a["output"] for a in by_agent.values())
     total_cached = sum(a["cached"] for a in by_agent.values())
+
+    # Ecosystem usage: skills, MCP servers, subagent types. New keys only — the
+    # existing by_agent/by_day/by_model/total stay byte-identical (no silent
+    # historical changes). Delegated usage is exposed as its OWN bucket, never
+    # folded into the per-agent sums: claude subagent transcripts aren't
+    # sessions (counted nowhere else), while opencode/hermes children already
+    # appear as sessions above — adding parent-side sums would double-count.
+    by_skill: Dict[str, Dict[str, Any]] = {}
+    by_mcp_server: Dict[str, Dict[str, Any]] = {}
+    by_subagent_type: Dict[str, Dict[str, Any]] = {}
+    # delegated_*: usage that exists NOWHERE else (claude subagent transcripts).
+    # linked_child_*: child sessions spawned by a parent — their tokens are
+    # already in by_agent/by_day/total above; surfaced here as an attribution
+    # view, never added on top.
+    delegation_totals: Dict[str, Any] = {
+        "delegated_tokens": 0, "delegated_cost": 0.0,
+        "sessions_with_spawns": 0,
+        "linked_children": 0, "linked_child_tokens": 0, "linked_child_cost": 0.0,
+        "by_agent": {},
+    }
+    # Child sessions are looked up per (agent, id) so grok by_type rows can
+    # attribute each child's tokens to its subagent type.
+    sess_by_key = {(s.get("agent"), s.get("id")): s for s in sessions}
+
+    def _subagent_row(t: str) -> Dict[str, Any]:
+        return by_subagent_type.setdefault(t, {
+            "spawns": 0, "tokens": 0, "cost": 0.0, "session_count": 0,
+            "tokens_recorded": False, "agents": []})
+
+    def _deleg_agent_row(agent: str) -> Dict[str, Any]:
+        return delegation_totals["by_agent"].setdefault(agent, {
+            "parents": 0, "spawns": 0, "children": 0,
+            "child_tokens": 0, "child_cost": 0.0,
+            "delegated_tokens": 0, "delegated_cost": 0.0})
+
+    for s in sessions:
+        agent = s.get("agent")
+        for sk in s.get("skills_used") or []:
+            row = by_skill.setdefault(sk["name"], {"invocations": 0, "session_count": 0, "agents": []})
+            row["invocations"] += sk["count"]
+            row["session_count"] += 1
+            if agent not in row["agents"]:
+                row["agents"].append(agent)
+        for server, tools in (s.get("mcp_usage") or {}).items():
+            row = by_mcp_server.setdefault(server, {"calls": 0, "tools": {}, "session_count": 0, "agents": []})
+            row["session_count"] += 1
+            if agent not in row["agents"]:
+                row["agents"].append(agent)
+            for tool, n in tools.items():
+                row["calls"] += n
+                row["tools"][tool] = row["tools"].get(tool, 0) + n
+
+        deleg = s.get("delegation") or {}
+        spawns_here = deleg.get("spawn_count") or deleg.get("linked_children") or 0
+        if spawns_here:
+            delegation_totals["sessions_with_spawns"] += 1
+            arow = _deleg_agent_row(agent)
+            arow["parents"] += 1
+            arow["spawns"] += spawns_here
+        for t, d in (deleg.get("by_type") or {}).items():
+            row = _subagent_row(t)
+            row["spawns"] += d.get("count", 0)
+            row["session_count"] += 1
+            if agent not in row["agents"]:
+                row["agents"].append(agent)
+            # claude: per-type totals come straight from subagent transcripts.
+            if d.get("total") or d.get("cost"):
+                row["tokens"] += d.get("total", 0)
+                row["cost"] = round(row["cost"] + (d.get("cost") or 0), 6)
+                row["tokens_recorded"] = True
+            # grok: attribute each child SESSION's tokens to the spawning type.
+            for cid in d.get("child_session_ids") or []:
+                child = sess_by_key.get((agent, cid))
+                if child is None:
+                    continue
+                row["tokens"] += (child.get("tokens") or {}).get("total", 0)
+                row["cost"] = round(row["cost"] + (child.get("cost") or 0), 6)
+                row["tokens_recorded"] = True
+        # codex children carry their role; attribute the child session directly.
+        si = s.get("subagent_info")
+        if s.get("parent_session_id") and isinstance(si, dict) and si.get("role"):
+            row = _subagent_row(si["role"])
+            row["spawns"] += 1
+            if agent not in row["agents"]:
+                row["agents"].append(agent)
+            row["tokens"] += (s.get("tokens") or {}).get("total", 0)
+            row["cost"] = round(row["cost"] + (s.get("cost") or 0), 6)
+            row["tokens_recorded"] = True
+
+        if deleg.get("tokens_recorded") and deleg.get("delegated_total"):
+            delegation_totals["delegated_tokens"] += deleg["delegated_total"]
+            delegation_totals["delegated_cost"] = round(
+                delegation_totals["delegated_cost"] + (s.get("delegated_cost") or 0), 6)
+            arow = _deleg_agent_row(agent)
+            arow["delegated_tokens"] += deleg["delegated_total"]
+            arow["delegated_cost"] = round(arow["delegated_cost"] + (s.get("delegated_cost") or 0), 6)
+        if s.get("parent_session_id"):
+            delegation_totals["linked_children"] += 1
+            delegation_totals["linked_child_tokens"] += (s.get("tokens") or {}).get("total", 0)
+            delegation_totals["linked_child_cost"] = round(
+                delegation_totals["linked_child_cost"] + (s.get("cost") or 0), 6)
+            arow = _deleg_agent_row(agent)
+            arow["children"] += 1
+            arow["child_tokens"] += (s.get("tokens") or {}).get("total", 0)
+            arow["child_cost"] = round(arow["child_cost"] + (s.get("cost") or 0), 6)
+
     return {
         "by_agent": by_agent,
         "by_day": sorted_days,
         "by_model": by_model,
+        "by_skill": by_skill,
+        "by_mcp_server": by_mcp_server,
+        "by_subagent_type": by_subagent_type,
+        "delegation": delegation_totals,
         "total": {
             "input": total_input,
             "output": total_output,

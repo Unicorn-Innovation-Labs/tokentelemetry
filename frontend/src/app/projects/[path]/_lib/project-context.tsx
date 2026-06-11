@@ -22,6 +22,22 @@ export interface SessionRow {
   copilot_source?: string;
   antigravity_source?: string;
   tokens?: { input: number; output: number; cached: number; total: number };
+  cost?: number;
+  /* Delegation & ecosystem telemetry (see DESIGN.md) */
+  delegation?: {
+    supported: boolean;
+    tokens_recorded?: boolean;
+    spawn_count?: number;
+    delegated_total?: number;
+    linked_children?: number;
+    by_type?: Record<string, { count: number; total?: number; cost?: number; child_session_ids?: string[] }>;
+  };
+  delegated_cost?: number;
+  parent_session_id?: string | null;
+  child_session_ids?: string[];
+  subagent_info?: { role?: string; nickname?: string; depth?: number };
+  skills_used?: { name: string; count: number }[];
+  mcp_usage?: Record<string, Record<string, number>>;
 }
 
 export interface ProjectData {

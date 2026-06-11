@@ -31,9 +31,16 @@ interface ProjectConfig {
   plugins: PluginItem[];
 }
 
+interface UsageData {
+  by_skill?: Record<string, { invocations: number; session_count: number }>;
+  by_mcp_server?: Record<string, { calls: number; tools: Record<string, number>; session_count: number }>;
+  by_subagent_type?: Record<string, { spawns: number; tokens: number; cost: number; session_count: number }>;
+}
+
 export default function ConfigTab() {
   const { decodedPath } = useProject();
   const [config, setConfig] = useState<ProjectConfig | null>(null);
+  const [usage, setUsage] = useState<UsageData | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -44,6 +51,26 @@ export default function ConfigTab() {
       .catch(() => {})
       .finally(() => setLoading(false));
   }, [decodedPath]);
+
+  // Usage overlay: cross-link recorded skill/MCP/subagent invocations from
+  // session telemetry onto the inventory ("installed but never used" is itself
+  // an insight). Signal currently comes from Claude Code session logs.
+  useEffect(() => {
+    apiFetch(`/analytics`)
+      .then((r) => r.json())
+      .then(setUsage)
+      .catch(() => {});
+  }, []);
+
+  const skillUse = (x: ConfigItem) => {
+    const m = usage?.by_skill || {};
+    if (m[x.name]) return m[x.name];
+    // Plugin-namespaced skills are invoked as "<plugin>:<name>".
+    const plugin = x.pluginRef ? String(x.pluginRef).split("@")[0] : null;
+    return plugin ? m[`${plugin}:${x.name}`] : undefined;
+  };
+  const mcpUse = (x: ConfigItem) => usage?.by_mcp_server?.[x.name];
+  const subagentUse = (x: ConfigItem) => usage?.by_subagent_type?.[x.name];
 
   if (loading) {
     return (
@@ -101,10 +128,10 @@ export default function ConfigTab() {
         ) : (
           <div className="space-y-5">
             {pb.project.length  > 0 && <Group label="Plugins"   icon={<Puzzle size={12} className="text-violet-400" />}    items={pb.project}  render={renderPlugin} />}
-            {ag.project.length  > 0 && <Group label="Subagents" icon={<Users size={12} className="text-purple-400" />}     items={ag.project}  render={renderSubagent} />}
-            {sb.project.length  > 0 && <Group label="Skills"    icon={<BookOpen size={12} className="text-cyan-400" />}    items={sb.project}  render={renderSkill} />}
-            {cb.project.length  > 0 && <Group label="Commands"  icon={<Terminal size={12} className="text-emerald-400" />} items={cb.project}  render={renderCommand} />}
-            {mb.project.length  > 0 && <Group label="MCP servers" icon={<Wrench size={12} className="text-emerald-400" />} items={mb.project} render={renderMcp} />}
+            {ag.project.length  > 0 && <Group label="Subagents" icon={<Users size={12} className="text-purple-400" />}     items={ag.project}  render={(x) => renderSubagent(x, subagentUse(x), usage !== null)} />}
+            {sb.project.length  > 0 && <Group label="Skills"    icon={<BookOpen size={12} className="text-cyan-400" />}    items={sb.project}  render={(x) => renderSkill(x, skillUse(x), usage !== null)} />}
+            {cb.project.length  > 0 && <Group label="Commands"  icon={<Terminal size={12} className="text-emerald-400" />} items={cb.project}  render={(x) => renderCommand(x, skillUse(x), usage !== null)} />}
+            {mb.project.length  > 0 && <Group label="MCP servers" icon={<Wrench size={12} className="text-emerald-400" />} items={mb.project} render={(x) => renderMcp(x, mcpUse(x), usage !== null)} />}
             {mem.project.length > 0 && <Group label="Memory files" icon={<FileText size={12} className="text-amber-400" />} items={mem.project} render={renderMemory} cols={1} />}
           </div>
         )}
@@ -133,10 +160,10 @@ export default function ConfigTab() {
           </summary>
           <div className="px-5 py-5 border-t border-[var(--tt-border)] space-y-5">
             {pb.user.length  > 0 && <Group label="Plugins"   icon={<Puzzle size={12} className="text-violet-400" />}    items={pb.user}  render={renderPlugin} />}
-            {ag.user.length  > 0 && <Group label="Subagents" icon={<Users size={12} className="text-purple-400" />}     items={ag.user}  render={renderSubagent} />}
-            {sb.user.length  > 0 && <Group label="Skills"    icon={<BookOpen size={12} className="text-cyan-400" />}    items={sb.user}  render={renderSkill} />}
-            {cb.user.length  > 0 && <Group label="Commands"  icon={<Terminal size={12} className="text-emerald-400" />} items={cb.user}  render={renderCommand} />}
-            {mb.user.length  > 0 && <Group label="MCP servers" icon={<Wrench size={12} className="text-emerald-400" />} items={mb.user}  render={renderMcp} />}
+            {ag.user.length  > 0 && <Group label="Subagents" icon={<Users size={12} className="text-purple-400" />}     items={ag.user}  render={(x) => renderSubagent(x, subagentUse(x), usage !== null)} />}
+            {sb.user.length  > 0 && <Group label="Skills"    icon={<BookOpen size={12} className="text-cyan-400" />}    items={sb.user}  render={(x) => renderSkill(x, skillUse(x), usage !== null)} />}
+            {cb.user.length  > 0 && <Group label="Commands"  icon={<Terminal size={12} className="text-emerald-400" />} items={cb.user}  render={(x) => renderCommand(x, skillUse(x), usage !== null)} />}
+            {mb.user.length  > 0 && <Group label="MCP servers" icon={<Wrench size={12} className="text-emerald-400" />} items={mb.user}  render={(x) => renderMcp(x, mcpUse(x), usage !== null)} />}
             {mem.user.length > 0 && <Group label="Memory files" icon={<FileText size={12} className="text-amber-400" />} items={mem.user} render={renderMemory} cols={1} />}
           </div>
         </details>
@@ -172,7 +199,26 @@ function Group({
   );
 }
 
-const renderSkill = (s: ConfigItem) => (
+/* Usage overlay chip. Counts come from scanned session telemetry — the skill/
+   subagent signal is recorded by Claude Code logs (other agents don't log it),
+   so "no recorded use" means "not seen in recent scanned sessions", not proof
+   of zero use everywhere. */
+function UsageChip({ loaded, text }: { loaded: boolean; text: string | null }) {
+  if (!loaded) return null;
+  if (!text) {
+    return (
+      <div className="mt-2 text-[10px] text-[var(--tt-fg-faint)]"
+           title="Not seen in recently scanned sessions (usage signal currently recorded by Claude Code logs)">
+        no recorded use
+      </div>
+    );
+  }
+  return <div className="mt-2 text-[10px] tabular text-cyan-300/80">{text}</div>;
+}
+
+const sessionsLabel = (n: number) => `${n} session${n === 1 ? "" : "s"}`;
+
+const renderSkill = (s: ConfigItem, use?: { invocations: number; session_count: number }, loaded = false) => (
   <Card padding="sm" className="!p-3.5">
     <div className="flex items-start justify-between gap-2 mb-1.5">
       <span className="text-[13px] font-semibold text-[var(--tt-fg)] truncate">{s.name}</span>
@@ -185,10 +231,11 @@ const renderSkill = (s: ConfigItem) => (
         {String(s.source).replace(/^.*\//, "")}
       </div>
     )}
+    <UsageChip loaded={loaded} text={use ? `used ×${use.invocations} · ${sessionsLabel(use.session_count)}` : null} />
   </Card>
 );
 
-const renderSubagent = (a: ConfigItem) => {
+const renderSubagent = (a: ConfigItem, use?: { spawns: number; cost: number; session_count: number }, loaded = false) => {
   const sa = a as SubagentItem;
   return (
     <Card padding="sm" className="!p-3.5">
@@ -209,11 +256,12 @@ const renderSubagent = (a: ConfigItem) => {
         )}
         {sa.pluginRef && <PluginRef ref_={sa.pluginRef} />}
       </div>
+      <UsageChip loaded={loaded} text={use ? `spawned ×${use.spawns} · ${sessionsLabel(use.session_count)} · $${use.cost.toFixed(2)}` : null} />
     </Card>
   );
 };
 
-const renderCommand = (c: ConfigItem) => (
+const renderCommand = (c: ConfigItem, use?: { invocations: number; session_count: number }, loaded = false) => (
   <Card padding="sm" className="!p-3.5">
     <div className="flex items-start justify-between gap-2 mb-1.5">
       <span className="font-mono text-[13px] font-semibold text-[var(--tt-fg)] truncate">/{c.name}</span>
@@ -221,10 +269,11 @@ const renderCommand = (c: ConfigItem) => (
     </div>
     {c.description && <p className="text-[11px] text-[var(--tt-fg-muted)] leading-relaxed line-clamp-3">{String(c.description)}</p>}
     {c.pluginRef && <PluginRef ref_={String(c.pluginRef)} />}
+    <UsageChip loaded={loaded} text={use ? `used ×${use.invocations} · ${sessionsLabel(use.session_count)}` : null} />
   </Card>
 );
 
-const renderMcp = (m: ConfigItem) => {
+const renderMcp = (m: ConfigItem, use?: { calls: number; tools: Record<string, number>; session_count: number }, loaded = false) => {
   const mm = m as McpItem;
   return (
     <Card padding="sm" className="!p-3.5">
@@ -246,6 +295,7 @@ const renderMcp = (m: ConfigItem) => {
       )}
       {mm.type && <div className="mt-2 text-[10px] font-mono text-[var(--tt-fg-faint)] uppercase tracking-[0.16em]">{mm.type}</div>}
       {mm.pluginRef && <PluginRef ref_={mm.pluginRef} />}
+      <UsageChip loaded={loaded} text={use ? `${use.calls} calls · ${Object.keys(use.tools).length} tools · ${sessionsLabel(use.session_count)}` : null} />
     </Card>
   );
 };

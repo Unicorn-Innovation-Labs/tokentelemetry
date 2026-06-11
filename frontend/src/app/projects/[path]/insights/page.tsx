@@ -1,7 +1,7 @@
 "use client";
 
 import { Fragment, useMemo, useState } from "react";
-import { Sparkles, Activity, Flame, Clock4, Wrench } from "lucide-react";
+import { Sparkles, Activity, Flame, Clock4, Wrench, GitBranch, Zap, Cpu } from "lucide-react";
 
 import { getAgent } from "@/lib/agents";
 import { cn } from "@/lib/cn";
@@ -106,6 +106,74 @@ export default function InsightsTab() {
     };
   }, [sessions]);
 
+  // Delegation & ecosystem, scoped to this project's sessions and broken down
+  // per agent. Same count-once rules as /analytics: claude's delegated bucket
+  // is extra usage; spawned child sessions are attribution over tokens already
+  // counted; agents without the signal simply don't appear.
+  const eco = useMemo(() => {
+    type AgentRow = { parents: number; spawns: number; children: number; childTokens: number; childCost: number; delegatedTokens: number; delegatedCost: number };
+    const byAgent: Record<string, AgentRow> = {};
+    const types: Record<string, { spawns: number; tokens: number; cost: number; recorded: boolean; agents: Set<string> }> = {};
+    const skills: Record<string, { invocations: number; sessions: number; agents: Set<string> }> = {};
+    const mcp: Record<string, { calls: number; sessions: number; tools: Record<string, number>; agents: Set<string> }> = {};
+    const byKey = new Map(sessions.map((s) => [`${s.agent}:${s.id}`, s]));
+    let delegatedTokens = 0, delegatedCost = 0, sessionsWithSpawns = 0, linkedChildren = 0, childTokens = 0;
+
+    const arow = (a: string) => (byAgent[a] ||= { parents: 0, spawns: 0, children: 0, childTokens: 0, childCost: 0, delegatedTokens: 0, delegatedCost: 0 });
+    const trow = (t: string) => (types[t] ||= { spawns: 0, tokens: 0, cost: 0, recorded: false, agents: new Set() });
+
+    for (const s of sessions) {
+      const d = s.delegation;
+      const spawns = d?.spawn_count || d?.linked_children || 0;
+      if (spawns > 0) {
+        sessionsWithSpawns++;
+        const r = arow(s.agent); r.parents++; r.spawns += spawns;
+      }
+      for (const [t, info] of Object.entries(d?.by_type || {})) {
+        const r = trow(t);
+        r.spawns += info.count || 0;
+        r.agents.add(s.agent);
+        if (info.total || info.cost) {
+          r.tokens += info.total || 0; r.cost += info.cost || 0; r.recorded = true;
+        }
+        for (const cid of info.child_session_ids || []) {
+          const c = byKey.get(`${s.agent}:${cid}`);
+          if (c) { r.tokens += c.tokens?.total || 0; r.cost += c.cost || 0; r.recorded = true; }
+        }
+      }
+      if (s.parent_session_id && s.subagent_info?.role) {
+        const r = trow(s.subagent_info.role);
+        r.spawns++; r.agents.add(s.agent);
+        r.tokens += s.tokens?.total || 0; r.cost += s.cost || 0; r.recorded = true;
+      }
+      if (d?.tokens_recorded && d?.delegated_total) {
+        delegatedTokens += d.delegated_total; delegatedCost += s.delegated_cost || 0;
+        const r = arow(s.agent); r.delegatedTokens += d.delegated_total; r.delegatedCost += s.delegated_cost || 0;
+      }
+      if (s.parent_session_id) {
+        linkedChildren++; childTokens += s.tokens?.total || 0;
+        const r = arow(s.agent); r.children++; r.childTokens += s.tokens?.total || 0; r.childCost += s.cost || 0;
+      }
+      for (const sk of s.skills_used || []) {
+        const r = (skills[sk.name] ||= { invocations: 0, sessions: 0, agents: new Set() });
+        r.invocations += sk.count; r.sessions++; r.agents.add(s.agent);
+      }
+      for (const [srv, tools] of Object.entries(s.mcp_usage || {})) {
+        const r = (mcp[srv] ||= { calls: 0, sessions: 0, tools: {}, agents: new Set() });
+        r.sessions++; r.agents.add(s.agent);
+        for (const [tool, n] of Object.entries(tools)) { r.calls += n; r.tools[tool] = (r.tools[tool] || 0) + n; }
+      }
+    }
+    return {
+      byAgent: Object.entries(byAgent).sort((a, b) => (b[1].delegatedCost + b[1].childCost) - (a[1].delegatedCost + a[1].childCost)),
+      types: Object.entries(types).map(([name, t]) => ({ name, ...t, agents: [...t.agents] })).sort((a, b) => b.cost - a.cost),
+      skills: Object.entries(skills).sort((a, b) => b[1].invocations - a[1].invocations),
+      mcp: Object.entries(mcp).sort((a, b) => b[1].calls - a[1].calls),
+      delegatedTokens, delegatedCost, sessionsWithSpawns, linkedChildren, childTokens,
+      any: sessionsWithSpawns > 0 || Object.keys(skills).length > 0 || Object.keys(mcp).length > 0,
+    };
+  }, [sessions]);
+
   const totalTokens = insights.agents.reduce((a, [, x]) => a + x.tokens, 0);
   const totalSessions = insights.agents.reduce((a, [, x]) => a + x.count, 0);
 
@@ -196,6 +264,127 @@ export default function InsightsTab() {
           </div>
         )}
       </Card>
+
+      {/* Delegation & ecosystem — this project's subagent spawns, skills and
+          MCP usage, per agent. Only agents whose logs record the signal appear. */}
+      {eco.any && (
+        <Card padding="lg">
+          <CardHeader>
+            <div>
+              <CardTitle><GitBranch size={14} className="text-[var(--tt-brand)]" /> Delegation & ecosystem</CardTitle>
+              <p className="text-[11px] text-[var(--tt-fg-dim)] mt-0.5">
+                {eco.sessionsWithSpawns > 0
+                  ? <>{eco.sessionsWithSpawns} session{eco.sessionsWithSpawns === 1 ? "" : "s"} delegated work in this project
+                      {eco.delegatedTokens > 0 && <> · +{fmtNum(eco.delegatedTokens)} delegated tokens (${eco.delegatedCost.toFixed(2)})</>}
+                      {eco.linkedChildren > 0 && <> · {eco.linkedChildren} child session{eco.linkedChildren === 1 ? "" : "s"} ({fmtNum(eco.childTokens)} tok, already in totals)</>}</>
+                  : "Skill & MCP usage recorded in this project's sessions."}
+              </p>
+            </div>
+          </CardHeader>
+
+          {eco.byAgent.length > 0 && (
+            <div className="space-y-2 mb-2">
+              {eco.byAgent.map(([a, r]) => {
+                const meta = getAgent(a);
+                return (
+                  <div key={a} className="grid grid-cols-[120px_1fr_auto] items-center gap-3">
+                    <span className="text-[11px] font-semibold uppercase tracking-[0.14em] truncate" style={{ color: meta.hex }}>
+                      {meta.label}
+                    </span>
+                    <span className="text-[11px] text-[var(--tt-fg-dim)]">
+                      {r.parents} session{r.parents === 1 ? "" : "s"} · {r.spawns} spawn{r.spawns === 1 ? "" : "s"}
+                      {r.children > 0 && <> · {r.children} child session{r.children === 1 ? "" : "s"}</>}
+                    </span>
+                    <span className="tabular text-[10px] text-right whitespace-nowrap">
+                      {r.delegatedTokens > 0 ? (
+                        <span className="text-amber-300 font-semibold">+{fmtNum(r.delegatedTokens)} tok · ${r.delegatedCost.toFixed(2)}</span>
+                      ) : r.children > 0 ? (
+                        <span className="text-[var(--tt-fg-muted)]">{fmtNum(r.childTokens)} tok in children · ${r.childCost.toFixed(2)}</span>
+                      ) : (
+                        <span className="text-[var(--tt-fg-dim)]">tokens n/a</span>
+                      )}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {(eco.types.length > 0 || eco.skills.length > 0 || eco.mcp.length > 0) && (
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mt-5 pt-5 border-t border-[var(--tt-border)]">
+              {eco.types.length > 0 && (
+                <div>
+                  <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[var(--tt-fg-dim)] mb-2 flex items-center gap-1.5">
+                    <GitBranch size={11} /> Subagent types
+                  </div>
+                  <ul className="space-y-1.5 max-h-64 overflow-y-auto pr-1">
+                    {eco.types.map((t) => (
+                      <li key={t.name} className="flex items-center justify-between gap-2 text-[11px]">
+                        <span className="min-w-0">
+                          <span className="font-mono text-[var(--tt-fg)] truncate block" title={t.name}>{t.name}</span>
+                          <span className="text-[var(--tt-fg-dim)]">{t.spawns} spawn{t.spawns === 1 ? "" : "s"} · {t.agents.join(", ")}</span>
+                        </span>
+                        <span className="tabular text-right text-[10px] shrink-0">
+                          {t.recorded ? (
+                            <>
+                              <span className="block font-semibold text-amber-300">${t.cost.toFixed(2)}</span>
+                              <span className="block text-[var(--tt-fg-dim)]">{fmtNum(t.tokens)} tok</span>
+                            </>
+                          ) : (
+                            <span className="text-[var(--tt-fg-dim)]">tokens n/a</span>
+                          )}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {eco.skills.length > 0 && (
+                <div>
+                  <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[var(--tt-fg-dim)] mb-2 flex items-center gap-1.5">
+                    <Zap size={11} /> Skills used
+                  </div>
+                  <ul className="space-y-1.5 max-h-64 overflow-y-auto pr-1">
+                    {eco.skills.map(([name, r]) => (
+                      <li key={name} className="flex items-center justify-between gap-2 text-[11px]">
+                        <span className="min-w-0">
+                          <span className="font-mono text-[var(--tt-fg)] truncate block" title={name}>/{name}</span>
+                          <span className="text-[10px] text-[var(--tt-fg-dim)]">{[...r.agents].join(", ")}</span>
+                        </span>
+                        <span className="tabular text-[10px] text-[var(--tt-fg-dim)] whitespace-nowrap shrink-0">×{r.invocations} · {r.sessions} sess</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {eco.mcp.length > 0 && (
+                <div>
+                  <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[var(--tt-fg-dim)] mb-2 flex items-center gap-1.5">
+                    <Cpu size={11} /> MCP servers
+                  </div>
+                  <ul className="space-y-2 max-h-64 overflow-y-auto pr-1">
+                    {eco.mcp.map(([name, r]) => {
+                      const top = Object.entries(r.tools).sort((a, b) => b[1] - a[1]).slice(0, 3);
+                      return (
+                        <li key={name} className="text-[11px]">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-mono text-[var(--tt-fg)] truncate" title={name}>{name}</span>
+                            <span className="tabular text-[10px] text-[var(--tt-fg-dim)] whitespace-nowrap">{r.calls} calls · {r.sessions} sess</span>
+                          </div>
+                          <div className="text-[10px] text-[var(--tt-fg-dim)] truncate">
+                            <span className="text-[var(--tt-fg-muted)]">{[...r.agents].join(", ")} · </span>
+                            {top.map(([tool, n]) => `${tool} ×${n}`).join(" · ")}
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+        </Card>
+      )}
 
       {/* Leaderboard + migration ribbon */}
       <Card padding="lg">

@@ -1,6 +1,35 @@
 {
   "releases": [
     {
+      "tag": "2026-06-10",
+      "title": "See what your subagents, skills & MCPs cost",
+      "highlights": [
+        {
+          "title": "Subagent spend, finally visible",
+          "description": "When a Claude Code session spawns subagents (Explore, general-purpose, custom agents), their tokens were invisible until now — on a typical machine that's millions of tokens. Session pages show a \"Delegated work\" card with each subagent's task, model, tokens and cost, priced by the model the subagent actually ran (an Explore on Haiku no longer hides inside an Opus session).",
+          "href": "/"
+        },
+        {
+          "title": "Which subagent types earn their keep",
+          "description": "Analytics gains a Delegation & ecosystem section: total delegated tokens and cost, plus a per-type ranking. If general-purpose agents cost you 5× what Explore agents do for similar work, you'll see it — and can change how you delegate.",
+          "href": "/analytics"
+        },
+        {
+          "title": "Skill & MCP usage, cross-linked to your inventory",
+          "description": "Sessions now record which skills you invoked and how often each MCP server was actually called. Your project's Config page overlays that usage on every installed skill, command, subagent and MCP server — anything marked \"no recorded use\" is a candidate to clean up.",
+          "href": "/analytics"
+        },
+        {
+          "title": "Delegation across Grok Build, Codex & Antigravity too",
+          "description": "Grok Build, Codex and Antigravity CLI all spawn subagents as separate sessions — those are now linked: the parent session shows each spawn (task, duration, role) with a jump to the child session, and children link back to their parent. Cursor shows spawn counts; agents that don't log spawns say so honestly instead of showing a misleading 0."
+        },
+        {
+          "title": "Recent Codex sessions were missing — now found",
+          "description": "Newer Codex versions stopped updating the session index TokenTelemetry relied on, so sessions from the last weeks never appeared. Sessions are now discovered from the session files themselves — expect your Codex session count (and totals) to jump to reality."
+        }
+      ]
+    },
+    {
       "tag": "2026-06-08",
       "title": "View the dashboard from another device",
       "highlights": [

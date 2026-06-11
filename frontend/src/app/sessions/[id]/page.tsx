@@ -13,6 +13,7 @@ import CopilotSourceBadge from "@/components/CopilotSourceBadge";
 import AntigravitySourceBadge from "@/components/AntigravitySourceBadge";
 import SummaryPanel from "@/components/summarizer/SummaryPanel";
 import { apiFetch, artifactUrl } from "@/lib/api";
+import { formatTokens, formatCost } from "@/lib/format";
 import { resolveSessionBackTarget } from "@/lib/navigation";
 
 interface Artifact {
@@ -98,6 +99,45 @@ function eventKind(evt: Event): StepKind {
   return "other";
 }
 
+/* Normalize a raw trace payload (session detail or subagent transcript) into
+   renderable events — shared by the main trace fetch and the subagent
+   drill-in viewer so both filter the same noise. */
+function normalizeTraceEvents(agent: string | null, data: any): Event[] {
+  let evts: any[] = [];
+  if (agent === "gemini" || agent === "antigravity") {
+    evts = (data?.messages || []).map((m: any) => ({
+      ...m,
+      type: m.type === "gemini" ? "assistant" : m.type,
+    }));
+  } else {
+    evts = Array.isArray(data) ? data : [];
+  }
+  if (data && typeof data === "object" && !Array.isArray(data) && data.error) {
+    evts = [];
+  }
+  if (agent === "codex") {
+    evts = evts.filter((e: any) => {
+      if (e.type === "turn_context") return false;
+      if (e.type === "event_msg" && e.payload?.type === "token_count") return false;
+      return true;
+    });
+  }
+  if (agent === "claude" || agent === "cursor") {
+    const NOISE_TYPES = new Set([
+      "last-prompt", "permission-mode", "ai-title", "file-history-snapshot",
+      "queue-operation", "attachment", "system",
+    ]);
+    evts = evts.filter((e: any) => {
+      if (NOISE_TYPES.has(e.type)) return false;
+      if (e.type === "user" && e.isMeta) return false;
+      const c = e.message?.content;
+      if (e.type === "user" && typeof c === "string" && c.startsWith("<local-command-")) return false;
+      return true;
+    });
+  }
+  return evts;
+}
+
 function normalizeTs(evt: Event): number | undefined {
   if (typeof evt.normalized_timestamp === "number") return evt.normalized_timestamp;
   if (evt.timestamp) {
@@ -158,6 +198,10 @@ export default function SessionDetailPage() {
   const [hermesOverlay, setHermesOverlay] = useState<any | null>(null);
   const [allHermesSessions, setAllHermesSessions] = useState<Session[] | null>(null);
   const [grokForensics, setGrokForensics] = useState<any | null>(null);
+  const [delegation, setDelegation] = useState<any | null>(null);
+  // Subagent drill-in: holds the spawn entry whose trace is open in the
+  // slide-over viewer. Parent trace state (scrubber, tabs) stays untouched.
+  const [subagentView, setSubagentView] = useState<any | null>(null);
 
   // Trace View States
   const [splitView, setSplitView] = useState(false);
@@ -188,43 +232,7 @@ export default function SessionDetailPage() {
       apiFetch(`/sessions/${id}?agent=${agent}`)
         .then((res) => res.json())
         .then((data) => {
-          let evts: any[] = [];
-          if (agent === 'gemini' || agent === 'antigravity') {
-            evts = (data.messages || []).map((m: any) => ({
-              ...m,
-              type: m.type === 'gemini' ? 'assistant' : m.type
-            }));
-          } else {
-            evts = Array.isArray(data) ? data : [];
-          }
-          // Strip codex noise events that clutter the step index with no UX value
-          if (agent === 'codex') {
-            evts = evts.filter((e: any) => {
-              if (e.type === 'turn_context') return false;
-              if (e.type === 'event_msg' && e.payload?.type === 'token_count') return false;
-              return true;
-            });
-          }
-          // Antigravity log-only sessions return { error: "Not found" } from the detail endpoint —
-          // surface that upstream as an empty trace so the empty-state renders instead of a broken viewer.
-          if (data && typeof data === 'object' && !Array.isArray(data) && data.error) {
-            evts = [];
-          }
-          // Strip Claude / Cursor noise events that don't render meaningful trace UI
-          if (agent === 'claude' || agent === 'cursor') {
-            const NOISE_TYPES = new Set([
-              'last-prompt', 'permission-mode', 'ai-title', 'file-history-snapshot',
-              'queue-operation', 'attachment', 'system',
-            ]);
-            evts = evts.filter((e: any) => {
-              if (NOISE_TYPES.has(e.type)) return false;
-              // Drop synthetic local-command echo pings
-              if (e.type === 'user' && e.isMeta) return false;
-              const c = e.message?.content;
-              if (e.type === 'user' && typeof c === 'string' && c.startsWith('<local-command-')) return false;
-              return true;
-            });
-          }
+          const evts = normalizeTraceEvents(agent, data);
           setEvents(evts);
           setPlaybackIndex(evts.length);
           setLoading(false)
@@ -248,6 +256,16 @@ export default function SessionDetailPage() {
           .then(res => res.json())
           .then(data => setGrokForensics(data))
           .catch(() => setGrokForensics(null));
+      }
+
+      // 5. Delegation overlay: subagent spawns + delegated token/cost attribution.
+      // Only agents whose logs record spawns at all (claude full, cursor count-only,
+      // grok/codex/antigravity/opencode/hermes parent-child links).
+      if (["claude", "cursor", "opencode", "hermes", "grok", "codex", "antigravity"].includes(agent)) {
+        apiFetch(`/sessions/${id}/delegation?agent=${agent}`)
+          .then(res => res.json())
+          .then(data => setDelegation(data && data.supported ? data : null))
+          .catch(() => setDelegation(null));
       }
     }
   }, [id, agent]);
@@ -535,6 +553,12 @@ export default function SessionDetailPage() {
                       <TokenStat label="Output" value={sessionInfo.tokens.output.toLocaleString()} />
                       <span className="w-px h-5 bg-[var(--tt-border)]" />
                       <TokenStat label="Cached" value={sessionInfo.tokens.cached.toLocaleString()} accent="text-[var(--tt-cyan-fg)]" />
+                      {delegation?.totals?.total > 0 && (
+                        <>
+                          <span className="w-px h-5 bg-[var(--tt-border)]" />
+                          <TokenStat label="Delegated" value={`+${formatTokens(delegation.totals.total)}`} accent="text-[var(--tt-brand)]" />
+                        </>
+                      )}
                     </>
                   )}
                 </div>
@@ -653,6 +677,8 @@ export default function SessionDetailPage() {
              {agent === "hermes" && hermesOverlay && <HermesOverlayCard overlay={hermesOverlay} />}
              {/* Grok Build forensics — token growth, permissions, tool lifecycle, plan mode */}
              {agent === "grok" && grokForensics && <GrokForensicsCard forensics={grokForensics} cost={sessionInfo?.tokens?.cost ?? sessionInfo?.cost} />}
+             {/* Delegated work — subagent spawns and what they actually cost */}
+             {delegation && agent && <DelegationCard delegation={delegation} agent={agent} sessionId={id} onOpenSubagent={setSubagentView} />}
              <div className={splitView ? "grid grid-cols-2 gap-8" : "space-y-8"}>
                 <div className="space-y-8">
                    {splitView && <h3 className="text-[10px] font-black text-[var(--tt-fg-dim)] uppercase tracking-[0.2em] ml-2 mb-2 flex items-center gap-2"><User size={14}/> User & Agent Dialogue</h3>}
@@ -730,7 +756,14 @@ export default function SessionDetailPage() {
                 </button>
              </div>
              <div className="p-4 text-[11px]">
-                {sidebarTab === "context" && <ContextPanel ctx={context} />}
+                {sidebarTab === "context" && (
+                  <>
+                    <ContextPanel ctx={context} />
+                    {delegation && agent && ((delegation.subagents?.length ?? 0) > 0 || (delegation.child_session_ids?.length ?? 0) > 0) && (
+                      <SubagentsSidebar delegation={delegation} agent={agent} onOpen={setSubagentView} />
+                    )}
+                  </>
+                )}
                 {sidebarTab === "tools" && <ToolsPanel summary={toolSummary} onJump={(name) => {
                    const idx = events.findIndex((e) => {
                       const mc = Array.isArray(e.message?.content) ? e.message.content : [];
@@ -807,6 +840,152 @@ export default function SessionDetailPage() {
             </div>
          </footer>
       )}
+
+      {/* Subagent drill-in: slide-over trace viewer. Closing returns to the
+          main session exactly where the user left it. */}
+      {subagentView && agent && (
+        <SubagentTraceModal
+          entry={subagentView}
+          agent={agent}
+          sessionId={id}
+          onClose={() => setSubagentView(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+/* Sidebar list of this session's subagents — the at-a-glance "what was
+   delegated" context, one click from each child's full trace. */
+function SubagentsSidebar({ delegation, agent, onOpen }: { delegation: any; agent: string; onOpen: (entry: any) => void }) {
+  const entries: any[] = delegation.subagents?.length
+    ? delegation.subagents
+    : (delegation.child_session_ids || []).map((cid: string) => ({ child_session_id: cid }));
+  if (entries.length === 0) return null;
+  return (
+    <div className="px-4 py-4 border-t border-[var(--tt-border)]">
+      <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-[var(--tt-fg-dim)] mb-3">
+        <GitBranch size={12} /> Subagents
+        <span className="tabular text-[var(--tt-fg-faint)]">{entries.length}</span>
+      </div>
+      <div className="space-y-1.5">
+        {entries.map((s: any, i: number) => (
+          <button
+            key={s.agent_id ?? s.child_session_id ?? i}
+            onClick={() => onOpen(s)}
+            className="w-full text-left rounded-[var(--tt-radius)] border border-[var(--tt-border)] bg-[var(--tt-sunken)] px-2.5 py-2 hover:border-[var(--tt-brand)]/50 transition-colors group"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--tt-brand)]">
+                {s.agent_type || s.agent_role || "subagent"}
+              </span>
+              <ChevronRight size={12} className="text-[var(--tt-fg-faint)] group-hover:text-[var(--tt-fg)] shrink-0" />
+            </div>
+            <div className="text-[11px] text-[var(--tt-fg)] truncate mt-0.5">
+              {s.description || s.nickname || s.child_session_id || s.agent_id}
+            </div>
+            <div className="text-[10px] tabular text-[var(--tt-fg-dim)] mt-0.5">
+              {s.model && <span>{String(s.model).replace(/-\d{8}$/, "")} · </span>}
+              {s.tokens != null && <span>{formatTokens(s.tokens.total)} tok · </span>}
+              {s.cost != null && <span>{formatCost(s.cost)} · </span>}
+              {typeof s.duration_ms === "number" && <span>{(s.duration_ms / 1000).toFixed(1)}s</span>}
+            </div>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* Slide-over trace viewer for one subagent — the LangSmith-style drill-in:
+   inspect the child's full trace without losing your place in the parent.
+   claude/cursor subagent transcripts come from the dedicated trace endpoint
+   (they aren't sessions); everyone else's children are real sessions. */
+function SubagentTraceModal({ entry, agent, sessionId, onClose }: { entry: any; agent: string; sessionId: string; onClose: () => void }) {
+  const [traceEvents, setTraceEvents] = useState<Event[] | null>(null);
+
+  const isTranscript = entry.agent_id && (agent === "claude" || agent === "cursor");
+  const childId: string | null = entry.child_session_id || null;
+
+  useEffect(() => {
+    setTraceEvents(null);
+    const url = isTranscript
+      ? `/sessions/${sessionId}/subagents/${entry.agent_id}/trace?agent=${agent}`
+      : childId
+      ? `/sessions/${childId}?agent=${agent}`
+      : null;
+    if (!url) { setTraceEvents([]); return; }
+    apiFetch(url)
+      .then((r) => r.json())
+      .then((d) => setTraceEvents(normalizeTraceEvents(agent, d)))
+      .catch(() => setTraceEvents([]));
+  }, [entry, agent, sessionId, isTranscript, childId]);
+
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [onClose]);
+
+  const backTo = encodeURIComponent(`/sessions/${sessionId}?agent=${agent}`);
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end" role="dialog" aria-modal="true">
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-[2px]" onClick={onClose} />
+      <div className="relative h-full w-full max-w-3xl bg-[var(--tt-canvas)] border-l border-[var(--tt-border)] shadow-2xl flex flex-col">
+        <div className="px-5 py-4 border-b border-[var(--tt-border)] flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <GitBranch size={13} className="text-[var(--tt-brand)] shrink-0" />
+              <span className="text-[10px] font-black uppercase tracking-[0.2em] text-[var(--tt-brand)]">Subagent trace</span>
+              <Badge>{entry.agent_type || entry.agent_role || "subagent"}</Badge>
+            </div>
+            <div className="text-[13px] font-semibold text-[var(--tt-fg)] truncate mt-1">
+              {entry.description || entry.nickname || childId || entry.agent_id}
+            </div>
+            <div className="text-[10px] tabular text-[var(--tt-fg-dim)] mt-0.5">
+              {entry.model && <span>{String(entry.model).replace(/-\d{8}$/, "")} · </span>}
+              {entry.tokens != null && <span>in/out {formatTokens(entry.tokens.input)}/{formatTokens(entry.tokens.output)} · {formatTokens(entry.tokens.cached)} cached · </span>}
+              {entry.cost != null && <span>{formatCost(entry.cost)} · </span>}
+              {typeof entry.duration_ms === "number" && <span>{(entry.duration_ms / 1000).toFixed(1)}s · </span>}
+              {entry.status && <span>{entry.status}</span>}
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            {childId && (
+              <Link
+                href={`/sessions/${childId}?agent=${agent}&from=${backTo}`}
+                className="text-[11px] text-[var(--tt-brand)] hover:underline whitespace-nowrap"
+                onClick={onClose}
+              >
+                Open full session →
+              </Link>
+            )}
+            <button
+              onClick={onClose}
+              aria-label="Close subagent trace"
+              className="h-8 w-8 grid place-items-center rounded-md text-[var(--tt-fg-muted)] hover:text-[var(--tt-fg)] hover:tt-tint-1 transition-colors"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+        <div className="flex-1 overflow-y-auto p-6 space-y-6">
+          {traceEvents === null ? (
+            <div className="space-y-3">
+              <Skeleton className="h-20 w-full" />
+              <Skeleton className="h-20 w-full" />
+              <Skeleton className="h-20 w-full" />
+            </div>
+          ) : traceEvents.length === 0 ? (
+            <div className="text-[12px] text-[var(--tt-fg-dim)] italic py-8 text-center">
+              No per-step trace recorded for this subagent.
+            </div>
+          ) : (
+            traceEvents.map((event, idx) => <EventCard key={idx} event={event} agent={agent} />)
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -1807,6 +1986,108 @@ function ResponseBody({ text, tone = "default" }: { text: string; tone?: "defaul
       >
         {mode === "md" ? "View Raw" : "View MD"}
       </button>
+    </div>
+  );
+}
+
+function DelegationCard({ delegation, agent, sessionId, onOpenSubagent }: { delegation: any; agent: string; sessionId: string; onOpenSubagent?: (entry: any) => void }) {
+  const subagents: any[] = delegation?.subagents || [];
+  const spawnCount: number = delegation?.spawn_count ?? 0;
+  const children: string[] = delegation?.child_session_ids || [];
+  const parentId: string | null = delegation?.parent_session_id || null;
+  // Nothing delegated and not itself a child → no card, no fake zeros.
+  if (spawnCount === 0 && children.length === 0 && !parentId) return null;
+  const totals = delegation?.totals;
+  // Children listed in subagent entries don't need a duplicate "Child session" row.
+  const inlineChildIds = new Set(subagents.map((s: any) => s.child_session_id).filter(Boolean));
+  const backTo = encodeURIComponent(`/sessions/${sessionId}?agent=${agent}`);
+  return (
+    <div className="mb-8 bg-[var(--tt-panel)]/60 border border-[var(--tt-brand)]/30 rounded-[var(--tt-radius-lg)] p-5">
+      <div className="flex items-center justify-between mb-3">
+        <div className="text-[10px] font-black uppercase tracking-[0.2em] text-[var(--tt-brand)] flex items-center gap-2">
+          <GitBranch size={12} strokeWidth={3} /> Delegated work
+        </div>
+        {!delegation.tokens_recorded && spawnCount > 0 && (
+          <span className="text-[10px] font-mono text-[var(--tt-fg-dim)]">tokens not recorded by {agent}</span>
+        )}
+      </div>
+
+      {/* Claude: full per-subagent attribution */}
+      {totals && (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
+          <Stat label="Subagents" value={String(spawnCount)} />
+          <Stat label="Delegated tokens" value={formatTokens(totals.total)} />
+          <Stat label="Cache writes" value={formatTokens(totals.cache_creation)} />
+          <Stat label="Delegated cost" value={formatCost(delegation.cost)} />
+        </div>
+      )}
+      {subagents.length > 0 && (
+        <div className="space-y-1">
+          {subagents.map((s: any, i: number) => (
+            <div
+              key={s.agent_id ?? s.child_session_id ?? i}
+              onClick={() => onOpenSubagent?.(s)}
+              role={onOpenSubagent ? "button" : undefined}
+              title={onOpenSubagent ? "View this subagent's trace" : undefined}
+              className={`flex items-center justify-between gap-3 text-[11px] font-mono text-[var(--tt-fg-muted)] py-1.5 px-2 rounded ${onOpenSubagent ? "cursor-pointer hover:bg-[var(--tt-sunken)] hover:text-[var(--tt-fg)]" : "hover:bg-[var(--tt-sunken)]"}`}
+            >
+              <span className="flex items-center gap-2 min-w-0">
+                <Badge>{s.agent_type || s.agent_role || "subagent"}</Badge>
+                <span className="truncate text-[var(--tt-fg)]">{s.description || s.nickname || s.agent_id}</span>
+              </span>
+              <span className="flex items-center gap-3 shrink-0">
+                {s.model && <span className="text-[var(--tt-fg-dim)]">{s.model.replace(/-\d{8}$/, "")}</span>}
+                {typeof s.duration_ms === "number" && <span className="text-[var(--tt-fg-dim)]">{(s.duration_ms / 1000).toFixed(1)}s</span>}
+                {s.tokens != null && (
+                  <>
+                    <span>in/out {formatTokens(s.tokens?.input)}/{formatTokens(s.tokens?.output)}</span>
+                    <span className="text-[var(--tt-cyan-fg)]">{formatTokens(s.tokens?.cached)} cached</span>
+                  </>
+                )}
+                {s.cost != null && <span className="text-[var(--tt-fg)]">{formatCost(s.cost)}</span>}
+                {onOpenSubagent && <span className="text-[var(--tt-brand)]">view ▸</span>}
+                {s.child_session_id && (
+                  <Link
+                    href={`/sessions/${s.child_session_id}?agent=${agent}&from=${backTo}`}
+                    onClick={(e) => e.stopPropagation()}
+                    className="text-[var(--tt-brand)] hover:underline"
+                  >open</Link>
+                )}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Cursor: spawn count only — its transcripts carry no usage data and no descriptions */}
+      {spawnCount > 0 && agent === "cursor" && (
+        <div className="mt-2 text-[11px] text-[var(--tt-fg-muted)]">
+          Cursor's subagent transcripts contain no token usage, so their cost can't be attributed.
+        </div>
+      )}
+
+      {/* OpenCode / Hermes: linked child sessions (already counted as sessions) */}
+      {(children.some((cid) => !inlineChildIds.has(cid)) || parentId) && (
+        <div className="space-y-1 text-[11px] font-mono">
+          {parentId && (
+            <div className="text-[var(--tt-fg-muted)]">
+              Spawned by{" "}
+              <Link href={`/sessions/${parentId}?agent=${agent}&from=${backTo}`} className="text-[var(--tt-brand)] hover:underline">{parentId}</Link>
+            </div>
+          )}
+          {children.filter((cid) => !inlineChildIds.has(cid)).map((cid) => (
+            <div key={cid} className="text-[var(--tt-fg-muted)]">
+              Child session{" "}
+              {onOpenSubagent ? (
+                <button onClick={() => onOpenSubagent({ child_session_id: cid })} className="text-[var(--tt-brand)] hover:underline font-mono">{cid}</button>
+              ) : (
+                <Link href={`/sessions/${cid}?agent=${agent}&from=${backTo}`} className="text-[var(--tt-brand)] hover:underline">{cid}</Link>
+              )}
+              <span className="text-[var(--tt-fg-dim)]"> · tokens counted in its own session</span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
