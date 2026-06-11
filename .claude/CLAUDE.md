@@ -78,6 +78,30 @@ The hook is intentionally narrow. Cases:
 5. **Repo without `origin/main`**: hook allows through (assumes you know your setup).
 6. **Last resort**: `claude --no-hooks` for that session — but if you find yourself reaching for this often, the rule is mis-tuned and worth revisiting.
 
+## Pre-push merge validation (two gates)
+
+After issue #91 (vulnerable + unused deps merged un-reviewed during the
+fast remote-access ship), every change destined for `main` passes two gates:
+
+1. **`.claude/hooks/prepush-claude-review.py`** (local, PreToolUse on `Bash`).
+   On a `git push` / `gh pr create` from a non-main branch, it diffs
+   `origin/main..HEAD`, sends the diff to your local `claude` CLI for a focused
+   review (dependency hygiene, remote-exposure / auth-bypass regressions,
+   committed secrets, injection-class bugs), and **denies the push only on an
+   explicit high-confidence `block` verdict**. It **fails open**: missing
+   `claude` CLI, empty/huge diff, timeout, or unparseable output all ALLOW the
+   push — a flaky reviewer never blocks legit work. Reuses the push-detection
+   helpers from `enforce-update-json.py` (imported, not duplicated). Skips
+   docs/asset-only pushes. Bypass with `--no-hooks`.
+2. **`.github/workflows/security-audit.yml`** (CI, deterministic). Runs
+   `npm audit --omit=dev --audit-level=high` across root / `frontend` / `website`
+   on every PR touching a `package.json`, failing on high/critical *runtime*
+   vulns (dev-only advisories are reported but non-blocking). This catches
+   contributor PRs (which the local hook can't see) and is the exact gate that
+   would have stopped #91. Lockfiles are gitignored, so CI uses
+   `npm install --package-lock-only` — fixes ride on the committed `package.json`
+   pins + `overrides`, not a lockfile.
+
 ## Other project conventions
 
 - **Schedules page is read-only.** The CRUD UI was built but is commented out under `# DISABLED-MUTATIONS:` markers in `backend/main.py`. Re-enable by uncommenting; don't reimplement.
