@@ -359,7 +359,7 @@ async function start() {
     },
   });
 
-  const frontend = spawn('npm', ['run', 'dev', '--', '--port', String(frontPort)], {
+  const frontend = spawn('npm', ['run', 'dev', '--', '--port', String(frontPort), '--hostname', host], {
     cwd: frontendDir,
     stdio: 'inherit',
     shell: true,
@@ -377,7 +377,8 @@ async function start() {
     },
   });
 
-  const dashUrl = `http://${displayHost}:${frontPort}`;
+  const basePath = (process.env.TT_BASE_PATH || '').replace(/\/$/, '');
+  const dashUrl = `http://${displayHost}:${frontPort}${basePath || ''}`;
   console.log(`\nDashboard:  ${dashUrl}`);
   console.log(`API:        http://${displayHost}:${apiPort}`);
 

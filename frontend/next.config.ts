@@ -9,10 +9,13 @@ const allowedDevOrigins = (process.env.TT_ALLOWED_ORIGINS || "")
   .map((s) => s.trim())
   .filter(Boolean);
 
+const basePath = (process.env.TT_BASE_PATH || "").replace(/\/$/, "");
+
 const nextConfig: NextConfig = {
   devIndicators: false,
   // Empty array == default (no extra origins), so this is safe when unset.
   allowedDevOrigins,
+  ...(basePath ? { basePath } : {}),
 };
 
 export default nextConfig;

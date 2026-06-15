@@ -1,0 +1,11 @@
+{
+  "schema": "https://bagend.local/schemas/app-manifest.v1.json",
+  "name": "TokenTelemetry",
+  "category": "Utilities",
+  "display": {
+    "title": "TokenTelemetry",
+    "eyebrow": "Agent observability",
+    "body": "Local read-only insight dashboard for Hermes sessions, token usage, tool traces, cron, skills, and memory.",
+    "ctaLabel": "Open telemetry"
+  }
+}
