@@ -14,12 +14,9 @@ App backend (telemetry.py)  ──POST event──▶  WORKER  ──writeDataPo
                                              strips IP, adds country
 ```
 
-> **Migration note:** this used to forward to **Aptabase** (Worker held an
-> `APTABASE_KEY` secret). We moved to Analytics Engine for the far larger free
-> tier and to remove the key entirely. If you still have the old secret set, you
-> can delete it: `wrangler secret delete APTABASE_KEY`. The PHP fallback
-> (`hostinger-proxy.php`) is **no longer usable** — Analytics Engine can only be
-> written from a Worker binding, not from shared PHP hosting.
+> **Note:** if you ran an earlier build that used a third-party analytics key as
+> a Worker secret, you can delete it — Analytics Engine needs no key:
+> `wrangler secret delete APTABASE_KEY` (only if it still exists).
 
 ---
 
@@ -97,7 +94,7 @@ Plus the automatic `timestamp` and `_sample_interval` columns.
 ## Free tier, retention, cost
 
 - **Free (Workers Free plan):** 100,000 data points/day written + 10,000 read
-  queries/day. (~3M events/month — vs Aptabase's old 20k/month.)
+  queries/day (~3M events/month).
 - **Retention: 3 months.** Raw points older than 90 days are dropped. For longer
   trends, run a Cron-triggered Worker that periodically `SELECT`s aggregates and
   writes them to **D1** or **R2** (both free) — AE = recent firehose, D1/R2 =

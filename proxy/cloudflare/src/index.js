@@ -6,8 +6,7 @@
  * Engine is written via a Worker *binding* (env.TELEMETRY) that is bound to the
  * Cloudflare account at deploy time — there is NO key in the request path and
  * NO credential in the downloadable app. The app ships only this Worker's public
- * URL. (This is strictly better than the old Aptabase setup, which needed a
- * write key held as a Worker secret.)
+ * URL — there is no analytics key to hold or rotate anywhere.
  *
  * Privacy: we never read or store the client IP. We DO record the 2-letter
  * country from Cloudflare's edge (request.cf.country) — coarse geo, not an

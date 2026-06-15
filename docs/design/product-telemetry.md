@@ -1,19 +1,7 @@
 # Design: Privacy-respecting product telemetry
 
-**Status:** Draft for decision · **Author:** analysis · **Date:** 2026-06-14
-**Related:** [[local-first-no-user-network]] principle · website CRO analysis (`tokentelemetry-cro-analysis.md`) · `harness_config.py` preference pattern · update-check (the only existing outbound call)
-
-> **⚠️ Update 2026-06-15 — transport migrated to Cloudflare Analytics Engine.**
-> Option A (Aptabase) below is the historical decision; we have since moved the
-> sink from Aptabase to **Cloudflare Workers Analytics Engine**. Reasons:
-> (1) the free tier is ~150× larger (100k points/**day** vs Aptabase's 20k/**month**);
-> (2) **no key in the request path at all** — the Worker writes via an
-> account-bound binding, so the open-source app ships zero credentials (the
-> earlier key-leak concern disappears entirely). Trade-offs accepted: 3-month
-> raw retention (mitigate with a Cron→D1/R2 rollup for long-term trends) and no
-> built-in dashboard (query via SQL API / Grafana). See `proxy/README.md` for
-> the live architecture, schema, and deploy steps. Everything else in this doc
-> (opt-out model, allowlist redaction, first-run notice, event set) is unchanged.
+**Status:** BUILT & DEPLOYED · **Author:** analysis · **Date:** 2026-06-15
+**Related:** [[local-first-no-user-network]] principle · website CRO analysis (`tokentelemetry-cro-analysis.md`) · `harness_config.py` preference pattern · update-check (the only prior outbound call)
 
 ---
 
@@ -67,8 +55,9 @@ best practice (GitHub CLI backlash, Next.js anonymous telemetry, VS Code, the
    - **1b. Strictly anonymous, no personal data — this is what makes default-on
      lawful.** Under GDPR/ePrivacy, only genuinely non-personal anonymous analytics
      may run **without prior opt-in consent**. No stored IP, no stable identifier,
-     content-free, allowlist-enforced (§3.3). Aptabase's no-cookie/no-PII model is
-     built for exactly this. Add anything personal and default-on becomes a legal
+     content-free, allowlist-enforced (§3.3). The Cloudflare Analytics Engine
+     architecture is built for exactly this: no key ships in the app, no cookies,
+     no cross-session IDs. Add anything personal and default-on becomes a legal
      problem, not just a trust one.
 2. **Inspectable.** The user can preview the *exact* payload any time ("Show me what
    you send") — on the first-run notice and in Settings. Anonymous only lands with
@@ -78,7 +67,7 @@ best practice (GitHub CLI backlash, Next.js anonymous telemetry, VS Code, the
 4. **No content, ever.** No prompts, code, file paths, project names, tokens, costs,
    model outputs, log text. Only *that a feature was used*, never *what it operated on*.
 5. **No durable identity.** No account, no email, no stable hardware fingerprint. A
-   rotating, locally-generated anonymous id at most (see §7).
+   random per-launch `session_id` only (see §6).
 6. **Best-effort, never blocks.** Telemetry failures (offline, endpoint down) are
    swallowed silently and never slow or break the app. Mirror the update-check's
    fail-open posture.
@@ -90,7 +79,7 @@ best practice (GitHub CLI backlash, Next.js anonymous telemetry, VS Code, the
    opt in, and here's exactly what."
 
 > If we cannot hold all eight, we should ship **no telemetry** and use the
-> voluntary-feedback fallback in §6 Option D instead.
+> voluntary-feedback fallback (local "Share my stats" panel) instead.
 
 ---
 
@@ -108,6 +97,7 @@ sent at most once per meaningful action.
 | `session_id` | random per app launch | Group events in one run, no cross-session linking | low |
 | `agents_detected` | `["claude-code","codex"]` (names only, count) | **Highest-value signal**: which agents people actually run | low — names are public product list, not user data |
 | `summarizer_backend` | `ollama` / `claude` / `none` | Local vs cloud summarizer mix → where to invest | low |
+| `country` | `US` / `DE` (coarse, CF-edge-derived) | Regional usage breakdown | low — never IP; derived by CF edge, not stored |
 
 ### 3.2 Events (feature usage)
 | Event | Fires when | Properties | Question it answers |
@@ -124,39 +114,97 @@ sent at most once per meaningful action.
 
 ### 3.3 Explicitly NEVER collected
 Prompts · code · file/dir paths · project or repo names · tokens · costs in $ ·
-model output · log content · IP-derived precise location · any free-text the user
-typed · stable machine identifiers. These get an explicit **guardrail test**
+model output · log content · IP address or IP-derived precise location · any free-text
+the user typed · stable machine identifiers. These get an explicit **guardrail test**
 (`test_telemetry_redaction.py`) asserting the serializer drops anything outside the
 allowlist — so a future careless `feature.used("opened /Users/me/secret-repo")` can't
-leak.
+leak. Unknown or junk event names are also dropped server-side by the Worker.
 
 ---
 
-## 4. Where the data goes — the storage decision (you have no analytics engine)
+## 4. Architecture — Cloudflare Workers Analytics Engine
 
-This is the **real open fork.** We have no backend store, no dashboards, no pipeline.
-The four realistic paths:
+### Why Cloudflare Analytics Engine (AE)
 
-| Option | What it is | Pros | Cons | Fits "no engine"? |
-|---|---|---|---|---|
-| **A. Aptabase — managed (free tier)** ⭐ | Open-source, privacy-first analytics built *for desktop apps*. SDK posts events to their hosted endpoint; you read dashboards. No unique IDs, GDPR/CCPA/PECR-compliant by design. | Zero infra. Purpose-built for exactly this (macOS/Win/Linux). Free tier covers a small project. Privacy model already matches our principles. Fast to ship. | Third-party processor (must disclose). Outbound to aptabase.com. Free tier event cap. | ✅ they are the engine |
-| **B. Aptabase — self-hosted** | Same SDK, you run the collector + ClickHouse via Docker. | Full data ownership; "your telemetry never touches a third party" story. | You operate infra (ClickHouse, updates, uptime). Heaviest ops. | ⚠️ you become the engine |
-| **C. Tiny custom collector** | A Cloudflare Worker / minimal endpoint that appends events to a KV/D1 store; you write your own queries. | Cheap, full control, minimal surface. | You build *and maintain* ingestion + storage + every dashboard. Reinvents Aptabase poorly. | ⚠️ partial engine, lots of glue |
-| **D. No network — voluntary "Share my stats"** | App computes an anonymized usage summary **locally**; a Settings button shows it and lets the user copy/paste it into a GitHub Discussion, or attach to a survey. Nothing auto-sends. | **Strongest brand fit** — literally still "nothing leaves your machine unless you click send." Zero infra, zero processor. | Tiny sample (only motivated users). Manual aggregation. Slow signal. | ✅ no engine needed |
+The telemetry sink is a **Cloudflare Worker** that writes data points into
+**Analytics Engine** (AE), Cloudflare's purpose-built append-only time-series store.
 
-### Recommendation
-**Ship D first (this week), then add A behind the opt-in (next).**
+Key reasons this was chosen over alternatives:
 
-- **D is the honesty-preserving MVP.** It costs almost nothing, can't betray the brand,
-  and a "Help improve TokenTelemetry → review & share anonymized stats" panel doubles
-  as the *transparency UI* we need for A anyway (it shows the exact payload).
-- **A (Aptabase managed) is the scalable answer** once you want continuous signal. It
-  solves the no-engine problem outright (they store + dashboard), its privacy posture
-  already matches §2, and it's designed for desktop apps. Disclose it as a processor in
-  the privacy policy. Revisit **B (self-host)** only if event volume outgrows the free
-  tier or you want the "no third party at all" story as a selling point.
-- **Avoid C** unless you specifically want to sell "we built our own and it's auditable" —
-  it's the most code for the least differentiated result.
+- **No key ships in the app.** The Worker writes to AE via an account-bound
+  `env.TELEMETRY` binding — there is nothing to configure in the app, no secret to
+  rotate, and no credentials in the repo.
+- **Free tier is large.** AE free tier: **100 k data points/day written** +
+  **10 k read queries/day**; **90-day (3-month) raw retention**. Compare to
+  alternatives considered: managed analytics SaaS free tiers cap at ~20 k
+  events/month (roughly 150× smaller). AE's per-day budget scales comfortably
+  with early-stage usage.
+- **Full data ownership.** Events never touch a third-party analytics processor;
+  they live in your Cloudflare account, queryable via the AE SQL API or Grafana.
+- **No built-in dashboard (accepted trade-off).** AE has no point-and-click UI;
+  query via SQL API or connect Grafana. For long-term trends beyond 90-day raw
+  retention, a **Cron-triggered Worker → D1/R2 rollup** is the planned future path.
+
+### Data flow
+
+```
+frontend (page event, feature.used, …)
+    │
+    │  POST /telemetry/event   (loopback, backend bridge)
+    ▼
+backend/telemetry.py  telemetry.emit()
+    │  allowlist-serializes + redacts on the backend before dispatch
+    │
+    │  POST https://tt-telemetry-proxy.tokentelemetry.workers.dev/event
+    ▼
+Cloudflare Worker  (tt-telemetry-proxy)
+    │  re-validates event name against allowlist
+    │  derives coarse country from CF-edge header (never raw IP)
+    │  drops unknown / junk event names
+    │
+    ▼
+env.TELEMETRY.writeDataPoint(…)  →  AE dataset: tt_telemetry
+```
+
+`DEFAULT_PROXY_URL` in `backend/telemetry.py` is set to
+`https://tt-telemetry-proxy.tokentelemetry.workers.dev`. No key, no credentials,
+no DNS record to manage — the Worker is already deployed.
+
+### Schema (AE data point)
+
+Each `writeDataPoint` call records:
+
+| AE field type | Fields |
+|---|---|
+| `blobs` | `event`, `os`, `app_version`, `session_id`, `agents`, `summarizer_backend`, `country`, `props_json` |
+| `doubles` | (reserved for future numeric metrics, e.g. summary latency bucket) |
+| `indexes` | `event` (for efficient per-event cardinality filtering) |
+
+### Querying
+
+```sql
+-- DAU (distinct sessions per day)
+SELECT toDate(timestamp) AS day, count(DISTINCT session_id) AS dau
+FROM tt_telemetry
+WHERE event = 'app.launched'
+GROUP BY day ORDER BY day DESC;
+
+-- Feature adoption
+SELECT blob2 AS feature, count() AS uses
+FROM tt_telemetry
+WHERE event = 'feature.used'
+GROUP BY feature ORDER BY uses DESC;
+```
+
+Read via: `https://api.cloudflare.com/client/v4/accounts/{id}/analytics_engine/sql`
+or Cloudflare's Grafana datasource plugin.
+
+### Alternatives considered
+
+Managed analytics SaaS (e.g. Aptabase): rejected — free tier capped at ~20 k
+events/month vs AE's 100 k/day, and a third-party key would need to ship in or
+near the app. Self-hosted ClickHouse-based stacks: rejected — significant ops burden
+for early-stage signal.
 
 ---
 
@@ -173,74 +221,85 @@ but **default-on (opt-out)** — the user is *informed*, not asked permission.
    Both "Keep it on" and "Turn off" are equally weighted, visible choices (not a
    buried link). Non-interactive/CI launches don't show it — and, because there's no
    one to inform, **CI/non-interactive defaults to NOT emitting** (informed-consent
-   can't be satisfied unattended; avoids silent server collection).
+   can't be satisfied unattended; avoids silent server collection). The user's choice
+   is persisted in the local prefs DB as `telemetry_notice_ack`.
 2. **Settings → "Usage & privacy"**: a toggle (default **on**), a live **payload
    preview**, a link to the privacy policy, and the env-override status (read-only when
    `TT_NO_TELEMETRY` / `DO_NOT_TRACK` is set — exactly like update-check's
    `env_forced_off`).
-3. **Opt-out is immediate** and also wipes any local `telemetry_id`. `DO_NOT_TRACK=1`
-   is honored as a pre-emptive opt-out (never emits, never shows the notice).
+3. **Opt-out is immediate.** `DO_NOT_TRACK=1` is honored as a pre-emptive opt-out
+   (never emits, never shows the notice). `TT_NO_TELEMETRY=1` is a hard policy
+   override (for org/CI environments).
 
 ---
 
 ## 6. Anonymous identity
 
-- On opt-in, generate `telemetry_id` = random UUID stored locally in
-  `~/.tokentelemetry/telemetry.json`. **Rotate it every 30 days** (or offer a "reset
-  id" button) so it can't become a long-term tracker.
-- Opt-out deletes it. Never derived from hostname, MAC, disk serial, or any stable
-  hardware value.
-- Aptabase's model already avoids cross-session user IDs; if we use A, we lean on
-  their session-only scheme and keep `telemetry_id` minimal or omit it.
+- A **random `session_id`** (UUID) is generated fresh at each app launch. It groups
+  events within one session but never persists across launches, so it cannot become
+  a long-term tracker.
+- No stable ID is stored or derived from hostname, MAC, disk serial, or any hardware
+  value. Opt-out does not need to "delete" an id because none is persisted.
+- The Worker never records or logs IP addresses; the only location signal is a coarse
+  country code derived from Cloudflare's edge routing header.
 
 ---
 
 ## 7. Implementation surface (mirrors `update_check` almost exactly)
 
 **Backend**
-- `backend/harness_config.py`: add to `DEFAULT_PREFERENCES`:
+- `backend/harness_config.py`: `DEFAULT_PREFERENCES` includes:
   ```python
   "telemetry": True,           # opt-OUT: ON by default (cf. update_check). CI/
                                # non-interactive + DO_NOT_TRACK/TT_NO_TELEMETRY force off.
   ```
-- `backend/telemetry.py` (new): `enabled()` (pref AND not `TT_NO_TELEMETRY` AND not
+- `backend/telemetry.py`: `enabled()` (pref AND not `TT_NO_TELEMETRY` AND not
   `DO_NOT_TRACK`), `emit(event, props)`, allowlist serializer + redaction guard,
-  best-effort async send (or local-buffer for Option D). Fail-open, never raises —
-  same posture as `_update_check_enabled()` / the update fetch.
-- `backend/main.py`: endpoints `GET/POST /config/telemetry` (copy the
-  `/config/update-check` handler verbatim, including `env_forced_off` / `effective`),
-  plus `GET /config/telemetry/preview` returning the exact next payload.
-- `backend/test_telemetry_redaction.py` (new): asserts no non-allowlisted key, path,
-  or free-text can be serialized. This is the guardrail that makes "anonymous"
+  best-effort async POST to `DEFAULT_PROXY_URL`. Fail-open, never raises — same
+  posture as `_update_check_enabled()` / the update fetch.
+- `backend/main.py`: `POST /telemetry/event` bridge endpoint; `GET/POST
+  /config/telemetry` (copies the `/config/update-check` handler including
+  `env_forced_off` / `effective`); `GET /config/telemetry/preview` returning the
+  exact next payload.
+- `backend/test_telemetry_redaction.py`: asserts no non-allowlisted key, path, or
+  free-text can be serialized. This is the guardrail that makes "anonymous"
   *verifiable*, per §3.3.
 
+**Cloudflare Worker** (`proxy/`)
+- Deployed to `tt-telemetry-proxy.tokentelemetry.workers.dev`.
+- Receives events from the backend bridge, re-validates event names, derives coarse
+  country from CF edge, writes to AE via `env.TELEMETRY.writeDataPoint()`.
+- No secret is needed in the app; the Worker binding is account-bound on Cloudflare's
+  side.
+
 **Frontend** (`frontend/src/app/settings`)
-- A "Usage & privacy" card with the toggle + payload preview, wired to the new
-  endpoints (clone the update-check toggle component).
-- First-run consent banner component (clone the website `Analytics.tsx` consent
-  pattern; store choice in preferences, not just localStorage).
+- "Usage & privacy" card with the toggle + payload preview, wired to the backend
+  endpoints (cloned from the update-check toggle component).
+- First-run consent banner component; choice stored in prefs DB (`telemetry_notice_ack`),
+  not just localStorage.
 
 **Website** (`website/src/app/privacy/page.tsx`)
-- Update "What we never collect" to: collects nothing **by default**; if you opt in,
-  here is the exact, content-free list and the processor (if Option A). Keep it as
-  plain and verifiable as the current copy.
+- Updated: "What we never collect" now states collects nothing by default; if
+  telemetry is on, here is the exact, content-free list (no third-party analytics
+  processor to disclose — AE is Cloudflare account-bound). Copy kept plain and
+  verifiable.
 
 **Env / docs**
 - `TT_NO_TELEMETRY=1` and `DO_NOT_TRACK=1` documented next to `TT_NO_UPDATE_CHECK`.
-- README + CHANGELOG note. Because this is user-facing (`feat:`), it needs an
-  `UPDATE.json` entry per the project hook.
+- README + CHANGELOG note; `UPDATE.json` entry added per the project hook.
 
 ---
 
 ## 8. Example payloads
 
-**Option D (local-only "share my stats" — copy/paste, nothing auto-sent):**
+**In-app transparency preview ("See exactly what we send"):**
 ```json
 {
   "schema": "tt-usage/1",
-  "generated": "2026-06-14",
+  "generated": "2026-06-15",
   "app_version": "1.4.2",
   "os": "darwin",
+  "session_id": "a3f8…",
   "agents_detected": ["claude-code", "codex", "gemini-cli"],
   "summarizer_backend": "ollama",
   "usage_30d": {
@@ -252,24 +311,29 @@ but **default-on (opt-out)** — the user is *informed*, not asked permission.
 *(Note the directly actionable signal: Hermes unused, local-model filter used 9×,
 Artifacts barely touched.)*
 
-**Option A (Aptabase, per-event):**
+**Per-event payload sent to the Worker (auto-send, opt-out model):**
 ```json
-{ "event": "analytics.filtered", "props": { "dimension": "local-only" },
-  "ctx": { "app_version": "1.4.2", "os": "darwin", "session_id": "…" } }
+{ "event": "analytics.filtered",
+  "props": { "dimension": "local-only" },
+  "ctx": { "app_version": "1.4.2", "os": "darwin", "session_id": "a3f8…" } }
 ```
+
+The Worker adds `country` at the edge before calling `writeDataPoint`; the raw IP
+is never recorded.
 
 ---
 
-## 9. Rollout phases
+## 9. Rollout phases (completed)
 
-- **Phase 0 — instrument internally (no network):** add `telemetry.emit()` call sites
-  behind the (off) flag, write the redaction test. Nothing sends. Pure plumbing.
-- **Phase 1 — Option D ships:** Settings "Share my stats" panel + first-run prompt.
-  Honest, infra-free, doubles as the transparency UI. Start gathering voluntary
-  reports.
-- **Phase 2 — Option A (Aptabase managed) behind the same opt-in:** continuous signal.
-  Privacy policy discloses the processor. Watch the free-tier event cap.
-- **Phase 3 (only if needed):** self-host (B) for volume or the "no third party" story.
+- **Phase 0 — instrument internally (no network):** `telemetry.emit()` call sites
+  behind the (off) flag; redaction test. Nothing sent. Pure plumbing.
+- **Phase 1 — transparency UI:** Settings "Share my stats" / preview panel + first-run
+  notice. Honest, infra-free, doubles as the transparency UI.
+- **Phase 2 — AE auto-send behind opt-out:** continuous signal via
+  `tt-telemetry-proxy.tokentelemetry.workers.dev` → `writeDataPoint` → `tt_telemetry`.
+  Privacy policy updated; no third-party processor to disclose.
+
+All three phases are shipped.
 
 ---
 
@@ -277,33 +341,21 @@ Artifacts barely touched.)*
 
 | Risk | Mitigation |
 |---|---|
-| Brand betrayal / "even *they* track now" backlash | Opt-in only; loud transparency; payload preview; never default-on (the GitHub-CLI mistake) |
-| Accidental content leak in an event | Allowlist serializer + `test_telemetry_redaction.py` guardrail |
+| Brand betrayal / "even *they* track now" backlash | Default-on with loud first-run notice; payload preview; `DO_NOT_TRACK` / `TT_NO_TELEMETRY` honored; privacy copy rewritten |
+| Accidental content leak in an event | Allowlist serializer + `test_telemetry_redaction.py` guardrail; re-validated server-side in the Worker |
 | Telemetry slows/breaks app | Best-effort, async, fail-open — same as update-check |
-| Re-identification via rare field combos | Coarse buckets, no paths/names, rotating id, low cardinality enums |
-| Low opt-in → unrepresentative data | Accept it as the honest price; treat as directional; pair with GitHub Discussions/surveys |
-| Free-tier cap (Option A) | Sample high-frequency events (e.g. `page.viewed`) or self-host |
+| Re-identification via rare field combos | Coarse buckets, no paths/names, per-launch session_id only, low cardinality enums |
+| Data beyond 90-day AE raw retention | Cron→D1/R2 rollup Worker (future); raw retention sufficient for initial signal |
+| AE read query budget (10k/day) | Batch queries; cache Grafana results; budget is generous for dashboard use |
 
 ---
 
-## 11. Decisions (locked 2026-06-14 — revised)
-
-> **Revision:** the consent model was flipped from opt-in to **opt-out (on by
-> default)** at the maintainer's direction. "On by default" only works with
-> auto-send, so **Aptabase (Option A) becomes the primary, default-on transport**,
-> and Option D's local summary is **repurposed as the in-app transparency/"see
-> exactly what we send" preview** (not a separate manual phase).
+## 11. Decisions (locked 2026-06-15)
 
 | Question | Decision |
 |---|---|
-| **Consent model** | **Opt-out — ON by default**, with a loud first-run notice + one-click off (§2.1, §5). Strictly anonymous, no personal data (§1b). |
-| **Transport** | **Aptabase managed (A)** as the default-on auto-send engine; **Option D repurposed** as the transparency preview UI. Self-host (B) revisited only if volume/positioning demands. |
+| **Consent model** | **Opt-out — ON by default**, with a loud first-run notice + one-click off (§2.1, §5). Strictly anonymous, no personal data (§1b). Choice persisted as `telemetry_notice_ack`. |
+| **Transport / sink** | **Cloudflare Workers Analytics Engine** via `tt-telemetry-proxy.tokentelemetry.workers.dev`. Frontend events bridge through `POST /telemetry/event` on the backend; backend calls `telemetry.emit()` which POSTs to the Worker; Worker writes via `env.TELEMETRY.writeDataPoint()` into dataset `tt_telemetry`. No analytics key ships in the app. |
 | **First-run discovery** | **One-time first-run notice** stating telemetry is already on, with equal-weight *Keep on* / *Turn off* + *See exactly what*. CI/non-interactive: not shown **and** not emitting. |
-| **Release gate (NEW, blocking)** | **Rewrite the homepage + `privacy/page.tsx` "we collect nothing / no telemetry endpoint" copy** to match on-by-default reality, *before* the release ships (§1a). The release is not shippable until this is done. |
-| **Build status** | **BUILT 2026-06-14** (all phases). Backend `telemetry.py` + endpoints + redaction test (11/11 pass); frontend lib + first-run notice + Settings "Usage & privacy" card + page/filter emits; proxy (`proxy/` — Cloudflare Worker + PHP) so the Aptabase key never ships in the app; privacy/FAQ/TrustStrip/llms.txt copy rewritten; `UPDATE.json` entry added. **Remaining (maintainer):** deploy the proxy + paste the Aptabase App-Key into the proxy host secret (NOT the repo); point `telemetry.<domain>` DNS; confirm `DEFAULT_PROXY_URL` in `backend/telemetry.py`. |
-
-**When build is greenlit, start at Phase 0** (§9): the `telemetry: True` flag in
-`harness_config.py`, `telemetry.emit()` call sites, and `test_telemetry_redaction.py`
-— wired but pointed at the transparency preview until Aptabase keys + the privacy-copy
-rewrite land. Shipping is user-facing → needs an `UPDATE.json` entry, the copy
-rewrite, and the Aptabase processor disclosure, all in the same release.
+| **Release gate** | **Homepage + `privacy/page.tsx` "we collect nothing / no telemetry endpoint" copy** rewritten to match on-by-default reality (§1a). Shipped with the feature. |
+| **Build status** | **BUILT & DEPLOYED 2026-06-15.** Backend `telemetry.py` + bridge endpoint + redaction test (11/11 pass); frontend lib + first-run notice + Settings "Usage & privacy" card + page/filter emits; Cloudflare Worker deployed to `tt-telemetry-proxy.tokentelemetry.workers.dev`; privacy/FAQ/TrustStrip/llms.txt copy rewritten; `UPDATE.json` entry added. No maintainer steps remaining — the Worker is live and `DEFAULT_PROXY_URL` in `backend/telemetry.py` already points to it. |
