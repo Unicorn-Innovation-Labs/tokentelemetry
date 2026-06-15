@@ -4586,6 +4586,96 @@ async def post_update_check(payload: dict = Body(...)):
     return {"enabled": enabled, "env_forced_off": env_off, "effective": enabled and not env_off}
 
 
+# --- Product telemetry (anonymous, opt-out, content-free) -----------------
+import telemetry as _telemetry
+
+# Frontend events we accept through the bridge. Backend-origin events
+# (app.launched, trace.summarized) are emitted server-side and not listed here,
+# so a remote caller can't spoof them.
+_TELEMETRY_CLIENT_EVENTS = {"page.viewed", "analytics.filtered", "feature.used"}
+
+
+@app.get("/config/telemetry")
+async def get_telemetry():
+    """Current telemetry state for the Settings toggle. Same shape as
+    update-check: `enabled` is the saved preference, `env_forced_off` is true
+    when DO_NOT_TRACK / TT_NO_TELEMETRY is set (toggle read-only), `effective`
+    is what actually happens (env + CI win). `notice_ack` is true once the
+    user has acknowledged the first-run notice (persisted in local prefs)."""
+    prefs = load_preferences()
+    pref = bool(prefs.get("telemetry", True))
+    return {
+        "enabled": pref,
+        "env_forced_off": _telemetry.env_forced_off(),
+        "is_ci": _telemetry._is_ci(),
+        "effective": _telemetry.enabled(),
+        "notice_ack": bool(prefs.get("telemetry_notice_ack", False)),
+    }
+
+
+@app.post("/config/telemetry")
+async def post_telemetry(payload: dict = Body(...)):
+    """Persist the telemetry preference. Body: {"enabled": bool}."""
+    from fastapi import HTTPException
+    enabled = payload.get("enabled")
+    if not isinstance(enabled, bool):
+        raise HTTPException(status_code=400, detail="'enabled' must be a boolean")
+    save_preferences({"telemetry": enabled})
+    return {
+        "enabled": enabled,
+        "env_forced_off": _telemetry.env_forced_off(),
+        "is_ci": _telemetry._is_ci(),
+        "effective": _telemetry.enabled(),
+    }
+
+
+@app.post("/config/telemetry/ack")
+async def post_telemetry_ack():
+    """Persist that the first-run notice was acknowledged so it never shows again."""
+    save_preferences({"telemetry_notice_ack": True})
+    return {"notice_ack": True}
+
+
+@app.get("/config/telemetry/preview")
+async def get_telemetry_preview():
+    """Exactly what telemetry would send (synthetic samples + recent real sends)
+    + the never-collected list. Powers the transparency panel."""
+    return _telemetry.preview()
+
+
+@app.post("/telemetry/event")
+async def post_telemetry_event(payload: dict = Body(...)):
+    """Bridge for frontend-origin events. The event name must be in the
+    client-events allowlist; props are re-sanitized server-side by telemetry.emit
+    regardless, so this endpoint can't be used to exfiltrate anything."""
+    event = payload.get("event")
+    if not isinstance(event, str) or event not in _TELEMETRY_CLIENT_EVENTS:
+        return {"ok": False}
+    props = payload.get("props")
+    _telemetry.emit(event, props if isinstance(props, dict) else None)
+    return {"ok": True}
+
+
+@app.on_event("startup")
+async def _telemetry_startup():
+    """Seed the anonymous context once, then emit app.launched. All best-effort —
+    a failure here must never block the server from starting."""
+    try:
+        try:
+            cfg = _summaries.load_config()
+            backend = cfg.get("backend") if cfg.get("enabled") else "none"
+        except Exception:
+            backend = "none"
+        _telemetry.update_context(
+            app_version=(_local_commit() or "unknown")[:12],
+            agents=_list_available_agents(),
+            summarizer_backend=backend or "none",
+        )
+        _telemetry.emit("app.launched")
+    except Exception:
+        pass
+
+
 @app.get("/config/retention")
 async def get_retention():
     """Per-agent transcript-retention info + TT archive opt-ins + storage usage.
@@ -5758,7 +5848,14 @@ async def put_summarizer_config(cfg: dict = Body(...)):
             status_code=400,
             detail=f"unknown summarizer backend {backend!r}; expected one of {sorted(KNOWN_BACKENDS)}",
         )
-    return _summaries.save_config(cfg)
+    saved = _summaries.save_config(cfg)
+    try:
+        _telemetry.update_context(
+            summarizer_backend=(saved.get("backend") if saved.get("enabled") else "none") or "none"
+        )
+    except Exception:
+        pass
+    return saved
 
 
 @app.get("/summarizer/ollama/models")
@@ -5849,6 +5946,13 @@ async def make_summary(session_id: str, agent: str, force: bool = False):
     if gen_error:
         from summarizers.errors import classify as _classify_err
         error_info = _classify_err(gen_error, backend_name=backend_name or "")
+    try:
+        _telemetry.emit("trace.summarized", {
+            "backend": backend_name or "none",
+            "outcome": "error" if gen_error else ("ok" if narrative else "empty"),
+        })
+    except Exception:
+        pass
     return {"summary": {**result, "stale": False}, "error": gen_error, "error_info": error_info}
 
 @app.post("/summaries/recent")

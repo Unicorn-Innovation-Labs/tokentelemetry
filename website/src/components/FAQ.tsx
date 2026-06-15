@@ -8,8 +8,8 @@ export const FAQ_ITEMS = [
     a: "Install TokenTelemetry, run Claude Code normally, and open http://localhost:3000. TokenTelemetry auto-detects Claude Code sessions from ~/.claude/ logs — no instrumentation, no SDK, no config.",
   },
   {
-    q: "How do I monitor Gemini CLI and Codex costs?",
-    a: "TokenTelemetry auto-reads logs from Gemini CLI, OpenAI Codex CLI, Cursor, GitHub Copilot, Qwen CLI, OpenCode, Vibe, Antigravity, and Grok Build (xAI). Token counts and dollar costs appear in the local dashboard automatically.",
+    q: "How do I monitor Google Antigravity, Codex, and Gemini CLI costs?",
+    a: "TokenTelemetry auto-reads logs from Google Antigravity (Google's agentic coding CLI), OpenAI Codex CLI, Gemini CLI, Cursor, GitHub Copilot, Qwen CLI, OpenCode, Vibe, and Grok Build (xAI). Token counts and dollar costs appear in the local dashboard automatically.",
   },
   {
     q: "Is there a free tool to monitor AI coding agent token usage?",
@@ -17,7 +17,7 @@ export const FAQ_ITEMS = [
   },
   {
     q: "Does TokenTelemetry send my data to the cloud?",
-    a: "No usage data, ever. The dashboard reads session log files from your local filesystem and serves a UI on localhost — your logs, sessions, tokens, and costs never leave your computer. The only outbound call is an optional update check that fetches the latest version and release notes from GitHub (no usage data sent); turn it off in Settings → Updates & privacy, or with TT_NO_UPDATE_CHECK=1.",
+    a: "Your logs, sessions, prompts, tokens, and costs never leave your computer — the dashboard reads local files and serves a UI on localhost. The app does send anonymous, content-free usage stats (which pages and features you use — never your code, prompts, paths, or costs) so we know what to improve; it's on by default and you can see the exact payload and turn it off in Settings → Usage & privacy, or with DO_NOT_TRACK=1. There's also an optional GitHub update check (no usage data); disable with TT_NO_UPDATE_CHECK=1.",
   },
   {
     q: "How does TokenTelemetry compare to Langfuse or Helicone?",

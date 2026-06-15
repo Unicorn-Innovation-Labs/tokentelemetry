@@ -1,19 +1,27 @@
 import Hero from "@/components/Hero";
-import HermesSpotlight from "@/components/HermesSpotlight";
+import ProofStrip from "@/components/ProofStrip";
+import HowItWorks from "@/components/HowItWorks";
 import FeatureShowcase from "@/components/FeatureShowcase";
+import HermesSpotlight from "@/components/HermesSpotlight";
+import Privacy from "@/components/Privacy";
 import AgentsGrid from "@/components/AgentsGrid";
 import FAQ from "@/components/FAQ";
-import TrustStrip from "@/components/TrustStrip";
+import FinalCTA from "@/components/FinalCTA";
+import Footer from "@/components/Footer";
 
 export default function Page() {
   return (
     <main>
       <Hero />
-      <HermesSpotlight />
+      <ProofStrip />
+      <HowItWorks />
       <FeatureShowcase />
+      <HermesSpotlight />
+      <Privacy />
       <AgentsGrid />
       <FAQ />
-      <TrustStrip />
+      <FinalCTA />
+      <Footer />
     </main>
   );
 }

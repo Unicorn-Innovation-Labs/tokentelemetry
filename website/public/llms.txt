@@ -18,7 +18,7 @@ It reads session logs and SQLite state directly from the filesystem (no SDK, no 
 - **Category:** AI observability, LLM monitoring, autonomous agent observability, developer tools
 - **Tech stack:** Node.js (frontend: Next.js 16), Python (backend: FastAPI)
 - **Platforms:** macOS, Linux, Windows
-- **Privacy:** 100% local — no telemetry, no cloud, no account
+- **Privacy:** Local-first — your logs, prompts, tokens, and costs never leave your machine; no cloud, no account. Sends anonymous, content-free usage stats (which features are used) on by default, opt out in Settings or with DO_NOT_TRACK=1.
 
 ## Supported Agents
 
@@ -135,7 +135,7 @@ A: Hermes can route the same model through different inference providers (direct
 A: Yes — TokenTelemetry is free, open-source (MIT), and runs 100% locally. No account, no signup, no cloud.
 
 **Q: Does TokenTelemetry send my data to the cloud?**
-A: No. Everything runs on your machine. The dashboard reads session log files from your local filesystem and serves a UI on localhost. Nothing leaves your computer.
+A: Your logs, sessions, prompts, tokens, and costs never leave your computer — the dashboard reads local files and serves a UI on localhost. The app does send anonymous, content-free usage stats (which pages and features you use — never your code, prompts, paths, or costs) to help prioritize improvements; it's on by default and can be turned off in Settings → Usage & privacy or with DO_NOT_TRACK=1.
 
 **Q: How does TokenTelemetry compare to Langfuse or Helicone?**
 A: TokenTelemetry is purpose-built for AI coding agents and autonomous agents, and is zero-config — no SDK instrumentation. Langfuse and Helicone are general LLM-app observability platforms that require code changes and (typically) a cloud account. Neither supports Hermes Agent specifically.

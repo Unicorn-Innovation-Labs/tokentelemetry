@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { format, formatDistanceToNow } from "date-fns";
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import {
   Activity, DollarSign, Cpu, Power, AlertTriangle, Clock, CheckCircle2,
   BookOpen, Brain, ArrowRight, Sparkles, Users, Wrench, Signal, Timer
@@ -16,6 +16,7 @@ import {
 import SourceBadge from "@/components/SourceBadge";
 import HermesIcon from "@/components/icons/HermesIcon";
 import { formatTokens, formatCost } from "@/lib/format";
+import { trackEvent } from "@/lib/telemetry";
 
 interface GatewayState {
   state: string | null;
@@ -79,6 +80,14 @@ export default function HermesPage() {
     () => (sessionsRes.data ?? []).filter((s) => s.agent === "hermes"),
     [sessionsRes.data]
   );
+
+  // Explicit signal that the Hermes dashboard (the differentiator surface) was
+  // opened — fires once per mount, through the proper content-free feature.used
+  // channel. The generic page.viewed{route:"hermes"} also fires from
+  // TelemetryNotice; this gives Hermes its own filterable event.
+  useEffect(() => {
+    trackEvent("feature.used", { name: "hermes-dashboard" });
+  }, []);
 
   const totalCost = useMemo(
     () => hermesSessions.reduce((acc, s) => acc + (s.cost || 0), 0),

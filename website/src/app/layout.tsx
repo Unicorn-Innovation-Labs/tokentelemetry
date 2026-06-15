@@ -3,7 +3,6 @@ import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { FAQ_ITEMS } from "@/components/FAQ";
 import SiteHeader from "@/components/SiteHeader";
-import MarqueeBanner from "@/components/MarqueeBanner";
 import Analytics from "@/components/Analytics";
 
 const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
@@ -127,11 +126,10 @@ const FAQ_LD = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className={`${geistSans.variable} ${geistMono.variable} dark`} suppressHydrationWarning>
-      <body className="relative min-h-screen overflow-x-hidden">
+      <body className="relative min-h-screen [overflow-x:clip]">
         {/* Single source of background atmosphere */}
         <div aria-hidden className="pointer-events-none fixed inset-0 -z-10 tt-canvas-glow" />
         <div aria-hidden className="pointer-events-none fixed inset-0 -z-10 tt-grid opacity-30" />
-        <MarqueeBanner />
         <SiteHeader />
         {children}
         <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(JSON_LD) }} />

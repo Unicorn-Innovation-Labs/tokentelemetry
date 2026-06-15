@@ -12,6 +12,7 @@ import {
 } from "recharts";
 
 import { useResource } from "@/lib/api";
+import { trackEvent } from "@/lib/telemetry";
 import { getAgent } from "@/lib/agents";
 import { useTheme } from "@/components/ThemeProvider";
 import { formatTokens as compact } from "@/lib/format";
@@ -240,7 +241,7 @@ export default function AnalyticsPage() {
             {agentOptions.map(a => (
               <button
                 key={a}
-                onClick={() => toggle(selAgents, a, setSelAgents)}
+                onClick={() => { toggle(selAgents, a, setSelAgents); trackEvent("analytics.filtered", { dimension: "agent" }); }}
                 className={cn(
                   "px-2 py-0.5 text-[10px] font-medium rounded-full border transition-colors",
                   selAgents.includes(a)
@@ -263,7 +264,7 @@ export default function AnalyticsPage() {
             {allModels.map(m => (
               <button
                 key={m}
-                onClick={() => toggle(selModels, m, setSelModels)}
+                onClick={() => { toggle(selModels, m, setSelModels); trackEvent("analytics.filtered", { dimension: "model" }); }}
                 className={cn(
                   "px-2 py-0.5 text-[10px] font-medium rounded-full border transition-colors truncate max-w-[180px]",
                   selModels.includes(m)

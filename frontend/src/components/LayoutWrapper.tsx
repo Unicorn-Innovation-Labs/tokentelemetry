@@ -4,6 +4,7 @@ import Navigation from "./Navigation";
 import FeedbackFloatingButton from "./feedback/FeedbackFloatingButton";
 import WhatsNewBanner from "./WhatsNewBanner";
 import TokenGate from "./TokenGate";
+import TelemetryNotice from "./TelemetryNotice";
 import { useEffect, useState } from "react";
 
 export default function LayoutWrapper({ children }: { children: React.ReactNode }) {
@@ -41,6 +42,7 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
       </main>
       <FeedbackFloatingButton />
       <TokenGate />
+      <TelemetryNotice />
     </body>
   );
 }
