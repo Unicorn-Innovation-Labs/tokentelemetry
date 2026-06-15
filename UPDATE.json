@@ -1,6 +1,17 @@
 {
   "releases": [
     {
+      "tag": "2026-06-15",
+      "title": "Privacy you can see — and switch off",
+      "highlights": [
+        {
+          "title": "Anonymous usage stats, explained plainly",
+          "description": "As TokenTelemetry evolves we need to understand how it's actually used — which features deliver value — so we can make it better for everyone. The app now shares a small set of anonymous usage signals: which pages and features you use, your OS and app version, and a coarse country derived at the network edge (never your IP). It carries nothing about your work — no code, prompts, file paths, project names, tokens, or costs. It's on by default so the picture is representative, but one click turns it off under Settings → Usage & privacy, and DO_NOT_TRACK=1 (or TT_NO_TELEMETRY=1) forces it off for restricted or enterprise environments.",
+          "href": "/settings#usage-privacy"
+        }
+      ]
+    },
+    {
       "tag": "2026-06-13",
       "title": "Analytics by date — and history that survives cleanup",
       "highlights": [

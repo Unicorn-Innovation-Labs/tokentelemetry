@@ -61,8 +61,13 @@
 /* =========================================================================
    Base
    ========================================================================= */
-html, body { height: 100%; }
+/* `height:100%` on body + `overflow-x:hidden` (set on <body> in layout.tsx)
+   makes the BODY a fixed-viewport-height scroll container instead of the window
+   — which breaks anchor links, sticky offsets, and scroll restoration. Keep the
+   100% on <html> only so <body> grows with content and the window scrolls. */
+html { height: 100%; }
 body {
+  min-height: 100%;
   background: var(--tt-canvas);
   color: var(--tt-fg);
   font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;

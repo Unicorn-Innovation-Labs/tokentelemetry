@@ -1,62 +1,70 @@
+"use client";
+import { useState } from "react";
 import { AGENTS } from "@/data/agents";
+import { track } from "@/lib/track";
 
+/**
+ * Interactive agent cards. The CRO audit (D3) found visitors tapping the old
+ * static agent cards expecting them to *do* something — dead clicks. Now each
+ * card is a real button that expands to reveal what TokenTelemetry captures and
+ * where it reads from, so the click pays off.
+ */
 export default function AgentsGrid() {
+  const [open, setOpen] = useState<number | null>(null);
+
   return (
-    <section id="agents" className="max-w-[1320px] mx-auto px-5 sm:px-8 py-16 sm:py-24">
-      <div className="text-center mb-10 sm:mb-12">
-        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--tt-fg-dim)] mb-3">Supported</p>
-        <h2 className="text-[28px] sm:text-[44px] leading-[1.1] tracking-[-0.02em] font-semibold text-[var(--tt-fg)] mb-4">
-          Eleven agents. <span className="text-[var(--tt-brand)]">Zero config.</span>
-        </h2>
-        <p className="text-[14px] sm:text-[15px] text-[var(--tt-fg-muted)] max-w-2xl mx-auto leading-relaxed">
-          TokenTelemetry reads logs your agents already write. No proxies, no wrappers, no SDK to register.
-        </p>
-      </div>
+    <section id="agents" className="border-t border-[var(--tt-border)]">
+      <div className="max-w-[1180px] mx-auto px-5 py-12 sm:py-[72px]">
+        <div className="text-center max-w-[680px] mx-auto mb-10">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--tt-fg-dim)] mb-3">Coverage</p>
+          <h2 className="text-[clamp(26px,3.6vw,42px)] leading-[1.08] tracking-[-0.025em] font-semibold text-[var(--tt-fg)]">
+            Eleven agents, <span className="text-[var(--tt-brand)]">one place.</span>
+          </h2>
+          <p className="mt-3.5 text-[15.5px] text-[var(--tt-fg-muted)] leading-relaxed">
+            Tap any agent to see what TokenTelemetry captures and where it reads from.
+          </p>
+        </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-        {AGENTS.map((a) => (
-          <div
-            key={a.name}
-            className="group relative overflow-hidden rounded-[var(--tt-radius-lg)] border border-[var(--tt-border)] bg-[var(--tt-panel)] p-5 transition-colors hover:border-[var(--tt-border-strong)]"
-          >
-            <span
-              aria-hidden
-              className="pointer-events-none absolute inset-x-0 -top-px h-px"
-              style={{ background: `linear-gradient(90deg, transparent, ${a.hex}55, transparent)` }}
-            />
-            <div className="flex items-start justify-between gap-3 mb-3">
-              <div className="min-w-0">
-                <div className="text-[15px] font-semibold tracking-[-0.01em] text-[var(--tt-fg)] truncate">
-                  {a.name}
-                </div>
-                <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-[var(--tt-fg-dim)] mt-0.5">
-                  {a.vendor}
-                </div>
-              </div>
-              <span
-                className="h-7 w-7 grid place-items-center rounded-md border shrink-0"
-                style={{ backgroundColor: `${a.hex}14`, borderColor: `${a.hex}33`, color: a.hex }}
+        <div className="grid grid-cols-1 min-[480px]:grid-cols-2 lg:grid-cols-4 gap-2.5 items-start">
+          {AGENTS.map((a, i) => {
+            const isOpen = open === i;
+            return (
+              <button
+                key={a.name}
+                aria-expanded={isOpen}
+                onClick={() => {
+                  setOpen(isOpen ? null : i);
+                  if (!isOpen) track("feature_used", { name: "agent_expand" });
+                }}
+                className="text-left p-4 rounded-[var(--tt-radius-lg)] border border-[var(--tt-border)] bg-[var(--tt-panel)] hover:border-[var(--tt-border-strong)] hover:bg-[var(--tt-raised)] hover:-translate-y-0.5 transition-all relative flex flex-col"
               >
-                <span className="w-2 h-2 rounded-full" style={{ backgroundColor: a.hex, boxShadow: `0 0 8px ${a.hex}80` }} />
-              </span>
-            </div>
-
-            <div className="flex flex-wrap gap-1.5 mb-3">
-              {a.captures.map((c) => (
-                <span
-                  key={c}
-                  className="text-[10px] font-medium text-[var(--tt-fg-muted)] tt-tint-1 border border-[var(--tt-border)] px-1.5 py-0.5 rounded uppercase tracking-tight"
-                >
-                  {c}
+                <span className="absolute top-4 right-4 text-[14px] text-[var(--tt-fg-faint)] transition-transform"
+                  style={{ transform: isOpen ? "rotate(45deg)" : "none" }}>
+                  +
                 </span>
-              ))}
-            </div>
+                <span className="flex items-center gap-2.5 mb-1">
+                  <span className="w-[9px] h-[9px] rounded-full shrink-0" style={{ backgroundColor: a.hex, boxShadow: `0 0 8px ${a.hex}66` }} />
+                  <span className="text-[14px] font-semibold tracking-[-0.01em] text-[var(--tt-fg)]">{a.name}</span>
+                </span>
+                <span className="font-mono text-[11px] text-[var(--tt-fg-dim)] pl-[19px]">{a.vendor}</span>
 
-            <div className="text-[10.5px] font-mono text-[var(--tt-fg-dim)] truncate" title={a.logPath}>
-              <span className="text-[var(--tt-fg-faint)]">reads:</span> {a.logPath}
-            </div>
-          </div>
-        ))}
+                <span className="overflow-hidden transition-all duration-300 ease-out pl-[19px]"
+                  style={{ maxHeight: isOpen ? 160 : 0, opacity: isOpen ? 1 : 0, marginTop: isOpen ? 8 : 0 }}>
+                  <span className="block text-[11.5px] text-[var(--tt-fg-muted)] leading-relaxed">
+                    Reads from <span className="font-mono text-[var(--tt-fg-muted)]">{a.logPath}</span>
+                  </span>
+                  <span className="flex flex-wrap gap-1 mt-2">
+                    {a.captures.map((c) => (
+                      <span key={c} className="font-mono text-[10px] px-1.5 py-0.5 rounded-[5px] bg-[var(--tt-sunken)] border border-[var(--tt-border)] text-[var(--tt-fg-dim)]">
+                        {c}
+                      </span>
+                    ))}
+                  </span>
+                </span>
+              </button>
+            );
+          })}
+        </div>
       </div>
     </section>
   );

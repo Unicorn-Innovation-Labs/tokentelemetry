@@ -59,3 +59,9 @@ GRAPH_REPORT.md
 history.db
 history.db-wal
 history.db-shm
+AUDIT-grok.md
+AUDIT-gemini.md
+tokentelemetry-cro-analysis.md
+pr.diff
+simulate.py
+.grok/

@@ -34,9 +34,15 @@ SCHEMA_VERSION = 1
 # App preferences with their defaults. Only keys listed here are ever read from
 # or written to disk, so a stale/garbage file can't inject unknown settings.
 #   update_check: whether the dashboard may fetch the latest version + release
-#                 notes from GitHub (the only outbound call the app makes).
+#                 notes from GitHub.
+#   telemetry:    whether the app sends anonymous, content-free feature-usage
+#                 events (see telemetry.py + docs/design/product-telemetry.md).
+#                 ON by default (opt-out); DO_NOT_TRACK / TT_NO_TELEMETRY / CI
+#                 force it off regardless.
 DEFAULT_PREFERENCES: Dict[str, Any] = {
     "update_check": True,
+    "telemetry": True,
+    "telemetry_notice_ack": False,
 }
 
 

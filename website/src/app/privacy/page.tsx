@@ -4,12 +4,12 @@ import Link from "next/link";
 export const metadata: Metadata = {
   title: "Privacy Policy — TokenTelemetry",
   description:
-    "How the TokenTelemetry website handles cookies and analytics. The TokenTelemetry tool itself is 100% local and collects nothing.",
+    "How TokenTelemetry handles privacy: your logs, prompts, and costs stay on your machine; the app sends only anonymous, content-free usage stats (on by default, one-click off).",
   alternates: { canonical: "https://tokentelemetry.com/privacy" },
   robots: { index: true, follow: true },
 };
 
-const UPDATED = "May 25, 2026";
+const UPDATED = "June 15, 2026";
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -29,81 +29,80 @@ export default function PrivacyPage() {
       </h1>
       <p className="mt-3 text-[13px] text-[var(--tt-fg-dim)]">Last updated: {UPDATED}</p>
 
-      <Section title="The short version">
+      <div className="mt-8 text-[15px] leading-relaxed text-[var(--tt-fg-muted)] space-y-3">
         <p>
-          The <strong className="text-[var(--tt-fg)]">TokenTelemetry tool</strong> is 100% local and read-only. It
-          runs on your machine, reads your local agent logs, and never sends your usage data anywhere. There are no
-          accounts and no server.
+          TokenTelemetry respects your privacy. As the product evolves, we need to understand how people
+          actually use it — which features deliver value and which don&apos;t — so we can make it better
+          for everyone. To do that we collect a small, anonymous set of usage signals. This data carries
+          nothing about your work. And if you&apos;d rather not share it, or you&apos;re in a restricted
+          environment, you can turn it off completely.
         </p>
-        <p>
-          This policy is only about the <strong className="text-[var(--tt-fg)]">marketing website</strong> you are
-          reading now (tokentelemetry.com), which uses optional analytics cookies to understand how the site is used.
-        </p>
-      </Section>
+      </div>
 
-      <Section title="Cookies & analytics on this website">
-        <p>
-          We load two analytics tools, and only after you press <em>Accept</em> on the cookie banner:
-        </p>
-        <ul className="list-disc pl-5 space-y-2">
+      <Section title="What we collect">
+        <p>Anonymous usage signals only — nothing about your code, prompts, or work:</p>
+        <ul className="list-disc pl-5 space-y-2 mt-2">
+          <li>Which pages you open in the app</li>
+          <li>Which features you use (e.g. trace summaries, analytics filters, the Hermes dashboard)</li>
+          <li>Whether a summary succeeded or failed, and which summarizer engine was used</li>
+          <li>Your OS family, CPU architecture, and the app version</li>
           <li>
-            <strong className="text-[var(--tt-fg)]">Google Analytics 4</strong> — aggregate, anonymized traffic stats
-            (page views, referrers, country). IP addresses are anonymized.
+            Your approximate country — derived at Cloudflare&apos;s edge from the request, not from your
+            IP (we never receive or store your IP)
           </li>
+          <li>Which AI agents are detected on your machine (e.g. Claude, Codex), as a generic list</li>
           <li>
-            <strong className="text-[var(--tt-fg)]">Microsoft Clarity</strong> — anonymized usage analytics such as
-            heatmaps and session replays of interactions with the page, to help us improve layout and content.
+            A random session id that is regenerated every launch and is never linked to you across
+            sessions
           </li>
         </ul>
-        <p>
-          If you press <em>Decline</em>, neither tool loads and no analytics cookies are set. Your choice is stored
-          locally in your browser so we only ask once. To change it, clear this site&apos;s data in your browser and
-          reload.
-        </p>
-        <p>We do not sell your data, run ads, or share it for advertising purposes.</p>
       </Section>
 
       <Section title="What we never collect">
+        <ul className="list-disc pl-5 space-y-2">
+          <li>Your code, prompts, or any model output</li>
+          <li>File paths, directory names, project or repository names</li>
+          <li>Token counts or cost data</li>
+          <li>Your IP address</li>
+          <li>Any stable user or device identifier</li>
+        </ul>
+      </Section>
+
+      <Section title="How it's handled">
         <p>
-          Your prompts, code, agent logs, token counts, and costs stay on your own machine. TokenTelemetry has no
-          usage-telemetry endpoint — your data is never collected or transmitted anywhere.
-        </p>
-        <p>
-          The application makes a single outbound network request: an <strong className="text-[var(--tt-fg)]">optional
-          update check</strong> that fetches the latest version and release notes from GitHub (about once an hour) so
-          you know when new features are available. It sends no usage data — only a version request, which, like any
-          web request, exposes your IP address and the app name to GitHub. Disable it in the app under
-          Settings → Updates &amp; privacy, or by setting <code>TT_NO_UPDATE_CHECK=1</code> before launching.
+          Events go to a Cloudflare Worker that writes anonymous, aggregate-friendly data points to
+          Cloudflare Analytics Engine. No analytics key ships in the app. Telemetry is on by default so
+          the data is representative, but turning it off is one click and always available.
         </p>
       </Section>
 
-      <Section title="Third-party policies">
+      <Section title="How to turn it off">
+        <ul className="list-disc pl-5 space-y-2">
+          <li>
+            <strong className="text-[var(--tt-fg)]">In the app:</strong> Settings → &ldquo;Usage &amp;
+            privacy&rdquo; → toggle it off.
+          </li>
+          <li>
+            <strong className="text-[var(--tt-fg)]">For restricted or enterprise environments:</strong>{" "}
+            set <code>DO_NOT_TRACK=1</code> or <code>TT_NO_TELEMETRY=1</code> and telemetry is forced
+            off. It is also automatically disabled in CI and non-interactive runs.
+          </li>
+        </ul>
+      </Section>
+
+      <Section title="This website">
         <p>
-          When enabled, the analytics tools are governed by their own policies:{" "}
-          <a
-            href="https://policies.google.com/privacy"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-[var(--tt-fg)] underline underline-offset-2 hover:text-[var(--tt-brand)] transition-colors"
-          >
-            Google Privacy Policy
-          </a>{" "}
-          and{" "}
-          <a
-            href="https://privacy.microsoft.com/privacystatement"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-[var(--tt-fg)] underline underline-offset-2 hover:text-[var(--tt-brand)] transition-colors"
-          >
-            Microsoft Privacy Statement
-          </a>
-          .
+          The marketing site (tokentelemetry.com) loads{" "}
+          <strong className="text-[var(--tt-fg)]">Google Analytics 4</strong> and{" "}
+          <strong className="text-[var(--tt-fg)]">Microsoft Clarity</strong> — but only after you press
+          Accept on the cookie banner. If you decline, neither tool loads and no analytics cookies are
+          set. We do not sell your data or use it for advertising.
         </p>
       </Section>
 
       <Section title="Contact">
         <p>
-          Questions? Open an issue on{" "}
+          Questions or concerns? Open an issue on{" "}
           <a
             href="https://github.com/VasiHemanth/tokentelemetry/issues"
             target="_blank"
