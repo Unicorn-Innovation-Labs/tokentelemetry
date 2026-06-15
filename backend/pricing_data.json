@@ -2847,13 +2847,13 @@
     },
     "azure\u0000deepseek-v4-flash": {
       "cached_read": null,
-      "in": 1.74,
-      "out": 3.48
+      "in": 0.19,
+      "out": 0.51
     },
     "azure\u0000deepseek-v4-pro": {
       "cached_read": null,
-      "in": 0.19,
-      "out": 0.51
+      "in": 1.74,
+      "out": 3.48
     },
     "azure\u0000gpt-3.5-turbo-0125": {
       "cached_read": null,
@@ -10505,6 +10505,11 @@
       "in": 0.2,
       "out": 0.5
     },
+    "llmgateway\u0000grok-build-0-1": {
+      "cached_read": 0.2,
+      "in": 1.0,
+      "out": 2.0
+    },
     "llmgateway\u0000hermes-2-pro-llama-3-8b": {
       "cached_read": null,
       "in": 0.14,
@@ -10532,6 +10537,11 @@
     },
     "llmgateway\u0000kimi-k2.6": {
       "cached_read": 0.16,
+      "in": 0.95,
+      "out": 4.0
+    },
+    "llmgateway\u0000kimi-k2.7-code": {
+      "cached_read": 0.19,
       "in": 0.95,
       "out": 4.0
     },
@@ -10689,6 +10699,11 @@
       "cached_read": null,
       "in": 0.1,
       "out": 0.3
+    },
+    "llmgateway\u0000nemotron-3-ultra-550b": {
+      "cached_read": 0.15,
+      "in": 0.5,
+      "out": 2.5
     },
     "llmgateway\u0000o1": {
       "cached_read": 7.5,
@@ -17477,8 +17492,8 @@
     },
     "openrouter\u0000deepseek/deepseek-v4-flash": {
       "cached_read": 0.02,
-      "in": 0.098,
-      "out": 0.196
+      "in": 0.09,
+      "out": 0.18
     },
     "openrouter\u0000deepseek/deepseek-v4-pro": {
       "cached_read": 0.003625,
@@ -17921,9 +17936,9 @@
       "out": 2.5
     },
     "openrouter\u0000moonshotai/kimi-k2.5": {
-      "cached_read": 0.09,
-      "in": 0.4,
-      "out": 1.9
+      "cached_read": null,
+      "in": 0.375,
+      "out": 2.025
     },
     "openrouter\u0000moonshotai/kimi-k2.6": {
       "cached_read": 0.34,
@@ -17931,9 +17946,9 @@
       "out": 3.41
     },
     "openrouter\u0000moonshotai/kimi-k2.7-code": {
-      "cached_read": 0.19,
-      "in": 0.95,
-      "out": 4.0
+      "cached_read": 0.16,
+      "in": 0.75,
+      "out": 3.5
     },
     "openrouter\u0000morph/morph-v3-fast": {
       "cached_read": null,
@@ -20665,30 +20680,20 @@
       "in": 0.15,
       "out": 0.15
     },
+    "siliconflow\u0000google/gemma-4-26b-a4b-it": {
+      "cached_read": null,
+      "in": 0.12,
+      "out": 0.4
+    },
+    "siliconflow\u0000google/gemma-4-31b-it": {
+      "cached_read": null,
+      "in": 0.13,
+      "out": 0.4
+    },
     "siliconflow\u0000inclusionai/ling-flash-2.0": {
       "cached_read": null,
       "in": 0.14,
       "out": 0.57
-    },
-    "siliconflow\u0000inclusionai/ling-mini-2.0": {
-      "cached_read": null,
-      "in": 0.07,
-      "out": 0.28
-    },
-    "siliconflow\u0000inclusionai/ring-flash-2.0": {
-      "cached_read": null,
-      "in": 0.14,
-      "out": 0.57
-    },
-    "siliconflow\u0000meta-llama/meta-llama-3.1-8b-instruct": {
-      "cached_read": null,
-      "in": 0.06,
-      "out": 0.06
-    },
-    "siliconflow\u0000minimaxai/minimax-m2.1": {
-      "cached_read": null,
-      "in": 0.3,
-      "out": 1.2
     },
     "siliconflow\u0000minimaxai/minimax-m2.5": {
       "cached_read": null,
@@ -20719,11 +20724,6 @@
       "cached_read": 0.16,
       "in": 0.95,
       "out": 4.0
-    },
-    "siliconflow\u0000nex-agi/deepseek-v3.1-nex-n1": {
-      "cached_read": null,
-      "in": 0.5,
-      "out": 2.0
     },
     "siliconflow\u0000openai/gpt-oss-120b": {
       "cached_read": null,
@@ -20980,11 +20980,6 @@
       "in": 1.2,
       "out": 4.0
     },
-    "siliconflow-cn\u0000ascend-tribe/pangu-pro-moe": {
-      "cached_read": null,
-      "in": 0.2,
-      "out": 0.6
-    },
     "siliconflow-cn\u0000baidu/ernie-4.5-300b-a47b": {
       "cached_read": null,
       "in": 0.28,
@@ -21045,16 +21040,6 @@
       "in": 0.14,
       "out": 0.57
     },
-    "siliconflow-cn\u0000inclusionai/ling-mini-2.0": {
-      "cached_read": null,
-      "in": 0.07,
-      "out": 0.28
-    },
-    "siliconflow-cn\u0000inclusionai/ring-flash-2.0": {
-      "cached_read": null,
-      "in": 0.14,
-      "out": 0.57
-    },
     "siliconflow-cn\u0000kwaipilot/kat-dev": {
       "cached_read": null,
       "in": 0.2,
@@ -21069,11 +21054,6 @@
       "cached_read": null,
       "in": 0.55,
       "out": 2.5
-    },
-    "siliconflow-cn\u0000paddlepaddle/paddleocr-vl": {
-      "cached_read": null,
-      "in": 0.0,
-      "out": 0.0
     },
     "siliconflow-cn\u0000paddlepaddle/paddleocr-vl-1.5": {
       "cached_read": null,
@@ -21585,6 +21565,11 @@
       "in": 0.6,
       "out": 3.0
     },
+    "synthetic\u0000hf:minimaxai/minimax-m3": {
+      "cached_read": 0.6,
+      "in": 0.6,
+      "out": 1.2
+    },
     "synthetic\u0000hf:moonshotai/kimi-k2-instruct-0905": {
       "cached_read": null,
       "in": 1.2,
@@ -21780,6 +21765,11 @@
       "in": 0.3,
       "out": 1.2
     },
+    "together\u0000minimaxai/minimax-m3": {
+      "cached_read": 0.06,
+      "in": 0.3,
+      "out": 1.2
+    },
     "together\u0000moonshotai/kimi-k2.5": {
       "cached_read": null,
       "in": 0.5,
@@ -21789,6 +21779,11 @@
       "cached_read": 0.2,
       "in": 1.2,
       "out": 4.5
+    },
+    "together\u0000moonshotai/kimi-k2.7-code": {
+      "cached_read": 0.19,
+      "in": 0.95,
+      "out": 4.0
     },
     "together\u0000nvidia/nemotron-3-ultra-550b-a55b": {
       "cached_read": 0.2,
@@ -22116,6 +22111,11 @@
       "out": 1.5
     },
     "venice\u0000minimax-m3": {
+      "cached_read": 0.06,
+      "in": 0.3,
+      "out": 1.2
+    },
+    "venice\u0000minimax-m3-preview": {
       "cached_read": 0.06,
       "in": 0.3,
       "out": 1.2
@@ -22469,11 +22469,6 @@
       "cached_read": 0.08,
       "in": 0.8,
       "out": 4.0
-    },
-    "vercel\u0000anthropic/claude-fable-5": {
-      "cached_read": 1.0,
-      "in": 10.0,
-      "out": 50.0
     },
     "vercel\u0000anthropic/claude-haiku-4.5": {
       "cached_read": 0.1,
@@ -23780,6 +23775,11 @@
       "in": 0.0,
       "out": 0.0
     },
+    "zai-coding-plan\u0000glm-5.2": {
+      "cached_read": 0.0,
+      "in": 0.0,
+      "out": 0.0
+    },
     "zai-coding-plan\u0000glm-5v-turbo": {
       "cached_read": 0.0,
       "in": 0.0,
@@ -24421,6 +24421,11 @@
       "out": 0.0
     },
     "zhipuai-coding-plan\u0000glm-5.1": {
+      "cached_read": 0.0,
+      "in": 0.0,
+      "out": 0.0
+    },
+    "zhipuai-coding-plan\u0000glm-5.2": {
       "cached_read": 0.0,
       "in": 0.0,
       "out": 0.0
@@ -25391,11 +25396,6 @@
       "cached_read": null,
       "in": 0.045,
       "out": 0.15
-    },
-    "ascend-tribe/pangu-pro-moe": {
-      "cached_read": null,
-      "in": 0.2,
-      "out": 0.6
     },
     "asi1-mini": {
       "cached_read": null,
@@ -27957,6 +27957,11 @@
       "in": 1.1,
       "out": 3.6
     },
+    "glm-5.2": {
+      "cached_read": 0.0,
+      "in": 0.0,
+      "out": 0.0
+    },
     "glm-5v-turbo": {
       "cached_read": null,
       "in": 0.72,
@@ -28922,6 +28927,11 @@
       "in": 0.6,
       "out": 3.0
     },
+    "hf:minimaxai/minimax-m3": {
+      "cached_read": 0.6,
+      "in": 0.6,
+      "out": 1.2
+    },
     "hf:moonshotai/kimi-k2-instruct-0905": {
       "cached_read": null,
       "in": 1.2,
@@ -29112,11 +29122,6 @@
       "in": 0.14,
       "out": 0.57
     },
-    "inclusionai/ling-mini-2.0": {
-      "cached_read": null,
-      "in": 0.07,
-      "out": 0.28
-    },
     "inclusionai/ring-1t": {
       "cached_read": 0.11,
       "in": 0.56,
@@ -29126,11 +29131,6 @@
       "cached_read": 0.015,
       "in": 0.075,
       "out": 0.625
-    },
-    "inclusionai/ring-flash-2.0": {
-      "cached_read": null,
-      "in": 0.14,
-      "out": 0.57
     },
     "infermatic/mn-12b-inferor-v0.0": {
       "cached_read": null,
@@ -30237,6 +30237,11 @@
       "in": 0.0,
       "out": 0.0
     },
+    "minimax-m3-preview": {
+      "cached_read": 0.06,
+      "in": 0.3,
+      "out": 1.2
+    },
     "minimax-text-01": {
       "cached_read": null,
       "in": 0.2,
@@ -30363,6 +30368,11 @@
       "out": 1.2
     },
     "minimaxai/minimax-m2.7": {
+      "cached_read": 0.06,
+      "in": 0.3,
+      "out": 1.2
+    },
+    "minimaxai/minimax-m3": {
       "cached_read": 0.06,
       "in": 0.3,
       "out": 1.2
@@ -31108,9 +31118,9 @@
       "out": 2.73
     },
     "moonshotai/kimi-k2.7-code": {
-      "cached_read": 0.19,
-      "in": 0.95,
-      "out": 4.0
+      "cached_read": 0.16,
+      "in": 0.75,
+      "out": 3.5
     },
     "moonshotai/kimi-k2.7-code-free": {
       "cached_read": 0.0,
@@ -31186,6 +31196,11 @@
       "cached_read": 0.0,
       "in": 0.0,
       "out": 0.0
+    },
+    "nemotron-3-ultra-550b": {
+      "cached_read": 0.15,
+      "in": 0.5,
+      "out": 2.5
     },
     "nemotron-3-ultra-free": {
       "cached_read": 0.0,
@@ -36135,5 +36150,5 @@
   },
   "schema": 1,
   "source": "https://models.dev/api.json",
-  "updated": "2026-06-13"
+  "updated": "2026-06-15"
 }
