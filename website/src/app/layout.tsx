@@ -1,9 +1,10 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
-import { FAQ_ITEMS } from "@/components/FAQ";
+import { FAQ_ITEMS } from "@/components/faq-items";
 import SiteHeader from "@/components/SiteHeader";
 import Analytics from "@/components/Analytics";
+import PageViewTracker from "@/components/PageViewTracker";
 
 const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
@@ -136,6 +137,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(ORG_LD) }} />
         <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(FAQ_LD) }} />
         <Analytics />
+        <PageViewTracker />
       </body>
     </html>
   );

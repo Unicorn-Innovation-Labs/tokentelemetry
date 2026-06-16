@@ -1,6 +1,7 @@
 "use client";
 import { useState } from "react";
 import { Copy, Check, Info } from "lucide-react";
+import { track } from "@/lib/track";
 
 const FULL_COMMAND =
   "curl -fsSL https://tokentelemetry.com/install.sh | bash && hermes plugins install VasiHemanth/tokentelemetry-hermes-plugin && hermes dashboard";
@@ -28,6 +29,7 @@ export default function PluginInstallBlock() {
 
   const copy = () => {
     navigator.clipboard?.writeText(FULL_COMMAND);
+    track("copy_plugin_command", { location: "hermes_spotlight" });
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   };

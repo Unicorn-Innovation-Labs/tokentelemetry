@@ -3,6 +3,7 @@
 import { useState, useMemo } from "react";
 import Link from "next/link";
 import rawResources from "../../../content/resources.json";
+import { track } from "@/lib/track";
 
 type Resource = {
   title: string;
@@ -62,6 +63,12 @@ function ResourceCard({ resource }: { resource: Resource }) {
         href={resource.url}
         target="_blank"
         rel="noopener noreferrer"
+        onClick={() =>
+          track("resource_click", {
+            title: resource.title,
+            tags: resource.tags.join(","),
+          })
+        }
         className="text-[15px] font-semibold tracking-[-0.01em] text-[var(--tt-fg)] hover:text-[var(--tt-brand)] transition-colors leading-snug mb-1"
       >
         {resource.title}
@@ -88,6 +95,7 @@ export default function ResourcesClient() {
   const [query, setQuery] = useState("");
 
   function toggleTag(tag: Tag) {
+    track("resource_filter", { tag, active: !activeTags.has(tag) });
     setActiveTags((prev) => {
       const next = new Set(prev);
       if (next.has(tag)) next.delete(tag);
@@ -141,6 +149,11 @@ export default function ResourcesClient() {
             placeholder="Search resources…"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
+            onBlur={(e) => {
+              const q = e.target.value.trim();
+              // Fire once when the user finishes typing, not per keystroke.
+              if (q.length >= 2) track("resource_search", { query: q });
+            }}
             className="w-full h-[38px] pl-9 pr-3 rounded-[var(--tt-radius)] border border-[var(--tt-border)] bg-[var(--tt-panel)] text-[13.5px] text-[var(--tt-fg)] placeholder:text-[var(--tt-fg-dim)] focus:outline-none focus:border-[var(--tt-border-strong)] transition-colors"
           />
         </div>
