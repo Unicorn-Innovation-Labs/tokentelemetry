@@ -22,6 +22,20 @@ export default function SiteHeader() {
         </Link>
 
         <div className="flex items-center gap-2">
+          <Link
+            href="/docs"
+            onClick={() => track("click_nav", { to: "docs", location: "header" })}
+            className="hidden sm:inline-flex items-center h-[34px] px-3 rounded-[var(--tt-radius)] text-[12.5px] font-medium text-[var(--tt-fg-muted)] hover:text-[var(--tt-fg)] transition-colors"
+          >
+            Docs
+          </Link>
+          <Link
+            href="/resources"
+            onClick={() => track("click_nav", { to: "resources", location: "header" })}
+            className="hidden sm:inline-flex items-center h-[34px] px-3 rounded-[var(--tt-radius)] text-[12.5px] font-medium text-[var(--tt-fg-muted)] hover:text-[var(--tt-fg)] transition-colors"
+          >
+            Resources
+          </Link>
           <a
             href={GITHUB_URL}
             target="_blank" rel="noopener noreferrer"
@@ -33,6 +47,7 @@ export default function SiteHeader() {
           </a>
           <a
             href="#install"
+            onClick={() => track("click_install", { location: "header" })}
             className="hidden sm:inline-flex items-center h-[34px] px-3.5 rounded-[var(--tt-radius)] bg-[var(--tt-brand-strong)] hover:bg-[var(--tt-brand)] text-white text-[12.5px] font-semibold shadow-[0_8px_22px_-12px_var(--tt-brand-glow)] transition-colors"
           >
             Install
