@@ -13,6 +13,7 @@ import { AGENTS, getAgent, type AgentKey } from "@/lib/agents";
 import SourceBadge from "@/components/SourceBadge";
 import CopilotSourceBadge from "@/components/CopilotSourceBadge";
 import AntigravitySourceBadge from "@/components/AntigravitySourceBadge";
+import AddToWorkflowPopover from "@/components/AddToWorkflowPopover";
 import LocalPowerInsights from "@/components/insights/LocalPowerInsights";
 import AgentProcessCard from "@/components/AgentProcessCard";
 import ConcurrencyTimelineCard from "@/components/ConcurrencyTimelineCard";
@@ -42,6 +43,8 @@ interface Session {
   antigravity_source?: string;
   /** Hermes-only: cli / telegram / cron / etc. */
   source_subtype?: string;
+  /** Workflows this session belongs to (annotated by the backend). */
+  workflow_ids?: string[];
 }
 
 interface AnalyticsResponse {
@@ -268,6 +271,7 @@ export default function Home() {
                     <TH className="pl-5">Agent</TH>
                     <TH>Project</TH>
                     <TH>Context</TH>
+                    <TH className="text-center">Workflow</TH>
                     <TH className="text-right pr-5">Time</TH>
                   </TR>
                 </THead>
@@ -304,6 +308,9 @@ export default function Home() {
                             {formatCost(s.cost)} own + {formatCost(s.children_cost_usd)} children = {formatCost(s.total_cost_usd)} total
                           </span>
                         )}
+                      </TD>
+                      <TD className="text-center">
+                        <AddToWorkflowPopover sessionId={s.id} initialWorkflowIds={s.workflow_ids} />
                       </TD>
                       <TD className="text-right pr-5 tabular text-[11px] text-[var(--tt-fg-muted)] group-hover:text-[var(--tt-brand)] transition-colors">
                         <Link href={`/sessions/${s.id}?agent=${s.agent}&from=${encodeURIComponent(pathname)}`} className="block">

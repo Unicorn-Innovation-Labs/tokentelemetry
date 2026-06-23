@@ -18,6 +18,7 @@ from harness_config import (
     load_hidden, hide_project, unhide_project,
     list_aliases, save_aliases,
     load_preferences, save_preferences,
+    load_workflows, save_workflows,
 )
 from tt_paths import data_dir
 
@@ -3661,12 +3662,9 @@ def _scan_sessions_sync():
         s.setdefault("delegation", {"supported": s.get("agent") in _DELEGATION_CAPABLE_AGENTS})
 
     # Roll up delegation/subagent costs: parent.total_cost_usd = own + descendants.
-    # Runs after all parent/child linking above so child_session_ids are complete.
     _rollup_delegation_costs(sessions)
 
-    # Concurrency: which sessions overlapped in time and the combined burn rate
-    # during those windows. Annotates each session in place and stashes the
-    # top-10 windows + summary for the /sessions/concurrency endpoint.
+    # Concurrency: annotates sessions in place, stashes windows for /sessions/concurrency.
     try:
         windows, summary = _compute_concurrency(sessions)
         _concurrency_cache["windows"] = windows
@@ -3678,6 +3676,20 @@ def _scan_sessions_sync():
             "peak_combined_cost_per_hour": 0.0,
             "total_concurrent_hours": 0.0,
         }
+
+    # Workflow membership: stamp each session with workflow_ids from inverted index.
+    try:
+        _wf_index: Dict[str, List[str]] = {}
+        for wf_id, wf in load_workflows().items():
+            if not isinstance(wf, dict):
+                continue
+            for sid in wf.get("session_ids", []) or []:
+                if isinstance(sid, str):
+                    _wf_index.setdefault(sid, []).append(wf_id)
+    except Exception:
+        _wf_index = {}
+    for s in sessions:
+        s["workflow_ids"] = _wf_index.get(s["id"], [])
 
     # Global sort by timestamp descending
     sessions.sort(key=lambda x: x["timestamp"], reverse=True)
@@ -5330,6 +5342,201 @@ async def post_aliases(aliases: Dict[str, str]):
     save_aliases(cleaned)
     _invalidate_sessions_cache()
     return {"ok": True, "aliases": cleaned}
+
+
+# ---------------------------------------------------------------------------
+# Workflow grouping
+# ---------------------------------------------------------------------------
+# Workflows let a user bundle N sessions (across agents) into a named task and
+# read the aggregated cost/tokens. Definitions live in workflows.json via
+# harness_config; stats are computed on read by joining against the cached
+# session list. Session IDs that no longer resolve are skipped, never fatal.
+import uuid as _uuid
+
+# Six preset colors offered in the UI; we don't validate against this list
+# server-side (any hex the client sends is stored), it's just the default.
+_DEFAULT_WORKFLOW_COLOR = "#6366f1"
+
+
+class WorkflowCreate(BaseModel):
+    name: str
+    description: Optional[str] = ""
+    color: Optional[str] = _DEFAULT_WORKFLOW_COLOR
+    session_ids: Optional[List[str]] = None
+
+
+class WorkflowUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    color: Optional[str] = None
+    session_ids: Optional[List[str]] = None
+
+
+class WorkflowSessions(BaseModel):
+    session_ids: List[str]
+
+
+def _workflow_with_stats(wf_id: str, wf: Dict[str, Any], sessions_by_id: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    """Project a stored workflow into the API shape with aggregated stats.
+
+    Joins session_ids against the cached sessions. Sessions that no longer
+    exist (deleted logs, rotated history) are silently skipped — they stay in
+    the stored list so they reappear if the session comes back, but they don't
+    contribute to totals and never raise."""
+    session_ids = [s for s in (wf.get("session_ids") or []) if isinstance(s, str)]
+    total_cost = 0.0
+    total_tokens = 0
+    agent_types: List[str] = []
+    last_active: Optional[float] = None
+    for sid in session_ids:
+        sess = sessions_by_id.get(sid)
+        if not sess:
+            continue
+        total_cost += float(sess.get("cost") or 0.0)
+        total_tokens += int((sess.get("tokens") or {}).get("total") or 0)
+        agent = sess.get("agent")
+        if agent and agent not in agent_types:
+            agent_types.append(agent)
+        ts = sess.get("timestamp")
+        if isinstance(ts, datetime):
+            epoch = ts.timestamp()
+            if last_active is None or epoch > last_active:
+                last_active = epoch
+    return {
+        "id": wf_id,
+        "name": wf.get("name", ""),
+        "description": wf.get("description", ""),
+        "color": wf.get("color") or _DEFAULT_WORKFLOW_COLOR,
+        "session_ids": session_ids,
+        "session_count": len(session_ids),
+        "total_cost_usd": round(total_cost, 6),
+        "total_tokens": total_tokens,
+        "agent_types": agent_types,
+        "created_at": wf.get("created_at"),
+        "last_active": last_active,
+    }
+
+
+async def _sessions_by_id() -> Dict[str, Dict[str, Any]]:
+    """Index the cached session list by id for workflow stat joins."""
+    out: Dict[str, Dict[str, Any]] = {}
+    for s in await get_sessions_cached():
+        out[s["id"]] = s
+    return out
+
+
+@app.get("/workflows")
+async def list_workflows():
+    """All workflows with aggregated cost/token/agent stats."""
+    sessions_by_id = await _sessions_by_id()
+    workflows = load_workflows()
+    out = [_workflow_with_stats(wf_id, wf, sessions_by_id)
+           for wf_id, wf in workflows.items() if isinstance(wf, dict)]
+    # Newest first by creation time (None sorts last).
+    out.sort(key=lambda w: w.get("created_at") or 0, reverse=True)
+    return out
+
+
+@app.post("/workflows")
+async def create_workflow(payload: WorkflowCreate):
+    from fastapi import HTTPException
+    name = (payload.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="'name' is required")
+    wf_id = "wf_" + _uuid.uuid4().hex[:8]
+    # De-dupe session_ids while preserving order.
+    seen: Set[str] = set()
+    session_ids: List[str] = []
+    for sid in (payload.session_ids or []):
+        if isinstance(sid, str) and sid and sid not in seen:
+            seen.add(sid); session_ids.append(sid)
+    workflows = load_workflows()
+    workflows[wf_id] = {
+        "name": name,
+        "description": (payload.description or "").strip(),
+        "color": payload.color or _DEFAULT_WORKFLOW_COLOR,
+        "session_ids": session_ids,
+        "created_at": _now().timestamp(),
+    }
+    save_workflows(workflows)
+    _invalidate_sessions_cache()
+    return _workflow_with_stats(wf_id, workflows[wf_id], await _sessions_by_id())
+
+
+@app.put("/workflows/{workflow_id}")
+async def update_workflow(workflow_id: str, payload: WorkflowUpdate):
+    from fastapi import HTTPException
+    workflows = load_workflows()
+    wf = workflows.get(workflow_id)
+    if not isinstance(wf, dict):
+        raise HTTPException(status_code=404, detail="workflow not found")
+    if payload.name is not None:
+        name = payload.name.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="'name' cannot be empty")
+        wf["name"] = name
+    if payload.description is not None:
+        wf["description"] = payload.description.strip()
+    if payload.color is not None:
+        wf["color"] = payload.color or _DEFAULT_WORKFLOW_COLOR
+    if payload.session_ids is not None:
+        seen: Set[str] = set()
+        cleaned: List[str] = []
+        for sid in payload.session_ids:
+            if isinstance(sid, str) and sid and sid not in seen:
+                seen.add(sid); cleaned.append(sid)
+        wf["session_ids"] = cleaned
+    workflows[workflow_id] = wf
+    save_workflows(workflows)
+    _invalidate_sessions_cache()
+    return _workflow_with_stats(workflow_id, wf, await _sessions_by_id())
+
+
+@app.delete("/workflows/{workflow_id}")
+async def delete_workflow(workflow_id: str):
+    from fastapi import HTTPException
+    workflows = load_workflows()
+    if workflow_id not in workflows:
+        raise HTTPException(status_code=404, detail="workflow not found")
+    del workflows[workflow_id]
+    save_workflows(workflows)
+    _invalidate_sessions_cache()
+    return {"ok": True}
+
+
+@app.post("/workflows/{workflow_id}/sessions")
+async def add_workflow_sessions(workflow_id: str, payload: WorkflowSessions):
+    from fastapi import HTTPException
+    workflows = load_workflows()
+    wf = workflows.get(workflow_id)
+    if not isinstance(wf, dict):
+        raise HTTPException(status_code=404, detail="workflow not found")
+    existing = [s for s in (wf.get("session_ids") or []) if isinstance(s, str)]
+    seen = set(existing)
+    for sid in payload.session_ids:
+        if isinstance(sid, str) and sid and sid not in seen:
+            seen.add(sid); existing.append(sid)
+    wf["session_ids"] = existing
+    workflows[workflow_id] = wf
+    save_workflows(workflows)
+    _invalidate_sessions_cache()
+    return _workflow_with_stats(workflow_id, wf, await _sessions_by_id())
+
+
+@app.delete("/workflows/{workflow_id}/sessions/{session_id}")
+async def remove_workflow_session(workflow_id: str, session_id: str):
+    from fastapi import HTTPException
+    workflows = load_workflows()
+    wf = workflows.get(workflow_id)
+    if not isinstance(wf, dict):
+        raise HTTPException(status_code=404, detail="workflow not found")
+    wf["session_ids"] = [s for s in (wf.get("session_ids") or [])
+                         if isinstance(s, str) and s != session_id]
+    workflows[workflow_id] = wf
+    save_workflows(workflows)
+    _invalidate_sessions_cache()
+    return _workflow_with_stats(workflow_id, wf, await _sessions_by_id())
+
 
 # def _quality_summary(edit_turns: int, retry_turns: int, measured_sessions: int) -> Dict[str, Any]:
 #     if edit_turns > 0:
