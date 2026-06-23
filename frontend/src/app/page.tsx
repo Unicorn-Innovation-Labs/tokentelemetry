@@ -14,6 +14,7 @@ import SourceBadge from "@/components/SourceBadge";
 import CopilotSourceBadge from "@/components/CopilotSourceBadge";
 import AntigravitySourceBadge from "@/components/AntigravitySourceBadge";
 import LocalPowerInsights from "@/components/insights/LocalPowerInsights";
+import AgentProcessCard from "@/components/AgentProcessCard";
 import { formatTokens, formatCost } from "@/lib/format";
 import { costFraming, type BillingConfig } from "@/lib/billing";
 import {
@@ -217,6 +218,14 @@ export default function Home() {
           </>
         );
       })()}
+
+      {/* System — live machine cost of running agents */}
+      <Section
+        title="System"
+        description="Live disk, CPU, and memory use of agent processes on this machine — the machine cost behind the token cost."
+      >
+        <AgentProcessCard />
+      </Section>
 
       {/* Activity + sidebars */}
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 items-start">

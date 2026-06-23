@@ -6037,6 +6037,148 @@ async def summarize_recent(limit: int = 20):
             failed += 1
     return {"requested": len(sessions), "summarized": done, "skipped": skipped, "failed": failed}
 
+# ---------------------------------------------------------------------------
+# Agent process resource monitor
+# ---------------------------------------------------------------------------
+# Token cost is only half the picture: agents running 24/7 also burn local disk,
+# CPU, and memory (e.g. Codex Desktop spinning ~7MB/s into its sqlite log). This
+# endpoint scans live processes for known agent runtimes and reports per-process
+# resource use. IO rates need two samples over time, so we cache the last
+# io_counters snapshot per PID and compute deltas across requests; the first hit
+# for a PID reports 0 until there's a prior reading to diff against.
+
+# (pattern, agent_type) — matched against lowercased name + full cmdline. Order
+# matters: more specific entries first so "claude" doesn't shadow nothing here,
+# but ".codex" paths win for codex before a generic match.
+_AGENT_PROCESS_PATTERNS = [
+    (".codex", "codex"),
+    ("codex", "codex"),
+    ("app-server", "codex"),
+    ("claude-code", "claude-code"),
+    ("claude", "claude-code"),
+    ("ollama", "ollama"),
+    ("llamafile", "local-models"),
+    ("lm-studio", "local-models"),
+    ("lmstudio", "local-models"),
+    ("llama", "local-models"),
+    ("hermes", "hermes"),
+    ("grok", "grok"),
+]
+
+# pid -> (io_read_bytes, io_write_bytes, monotonic_ts)
+_proc_io_cache: Dict[int, tuple] = {}
+
+
+def _classify_agent_process(name: str, cmdline: str) -> Optional[str]:
+    hay = f"{name}\n{cmdline}".lower()
+    for needle, agent_type in _AGENT_PROCESS_PATTERNS:
+        if needle in hay:
+            return agent_type
+    return None
+
+
+def _scan_agent_processes_sync() -> Dict[str, Any]:
+    try:
+        import psutil
+    except ImportError:
+        return {"error": "psutil not installed", "processes": []}
+
+    import time as _t
+
+    matched = []
+    for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+        try:
+            info = proc.info
+            name = info.get("name") or ""
+            cmdline = " ".join(info.get("cmdline") or [])
+            agent_type = _classify_agent_process(name, cmdline)
+            if agent_type is None:
+                continue
+            matched.append((proc, name, agent_type))
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            continue
+
+    # Prime cpu_percent for every match, then sleep once so the next read covers
+    # a real interval. One shared 0.1s window keeps the whole scan well under 2s.
+    for proc, _name, _at in matched:
+        try:
+            proc.cpu_percent(None)
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            pass
+    _t.sleep(0.1)
+
+    now = _t.monotonic()
+    seen_pids = set()
+    processes = []
+    for proc, name, agent_type in matched:
+        try:
+            pid = proc.pid
+            seen_pids.add(pid)
+
+            try:
+                cpu = round(proc.cpu_percent(None), 1)
+            except (psutil.AccessDenied, psutil.NoSuchProcess):
+                cpu = 0.0
+            try:
+                rss = round(proc.memory_info().rss / (1024 * 1024), 1)
+            except (psutil.AccessDenied, psutil.NoSuchProcess):
+                rss = 0.0
+            try:
+                status = proc.status()
+            except (psutil.AccessDenied, psutil.NoSuchProcess):
+                status = "unknown"
+            try:
+                uptime = max(0, int(_t.time() - proc.create_time()))
+            except (psutil.AccessDenied, psutil.NoSuchProcess):
+                uptime = 0
+
+            read_rate = write_rate = 0.0
+            try:
+                io = proc.io_counters()
+                prev = _proc_io_cache.get(pid)
+                _proc_io_cache[pid] = (io.read_bytes, io.write_bytes, now)
+                if prev:
+                    dt = now - prev[2]
+                    if dt > 0:
+                        read_rate = round(max(0, io.read_bytes - prev[0]) / dt / (1024 * 1024), 2)
+                        write_rate = round(max(0, io.write_bytes - prev[1]) / dt / (1024 * 1024), 2)
+            except (psutil.AccessDenied, NotImplementedError, AttributeError):
+                pass
+
+            processes.append({
+                "pid": pid,
+                "name": name,
+                "agent_type": agent_type,
+                "cpu_percent": cpu,
+                "memory_rss_mb": rss,
+                "io_read_mb_s": read_rate,
+                "io_write_mb_s": write_rate,
+                "status": status,
+                "uptime_seconds": uptime,
+            })
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            continue
+
+    # Drop cache entries for dead PIDs so it doesn't grow unbounded.
+    for dead in [p for p in _proc_io_cache if p not in seen_pids]:
+        _proc_io_cache.pop(dead, None)
+
+    processes.sort(key=lambda p: p["io_write_mb_s"], reverse=True)
+
+    return {
+        "processes": processes,
+        "total_write_mb_s": round(sum(p["io_write_mb_s"] for p in processes), 2),
+        "total_read_mb_s": round(sum(p["io_read_mb_s"] for p in processes), 2),
+        "total_memory_rss_mb": round(sum(p["memory_rss_mb"] for p in processes), 1),
+        "sampled_at": int(_time.time()),
+    }
+
+
+@app.get("/api/agent-processes")
+async def get_agent_processes():
+    return await _asyncio.to_thread(_scan_agent_processes_sync)
+
+
 if __name__ == "__main__":
     import uvicorn
 
