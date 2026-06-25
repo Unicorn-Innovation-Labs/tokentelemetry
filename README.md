@@ -153,33 +153,31 @@ Then open: **http://localhost:3000**
 
 Connected agents, recent activity feed, model distribution pie chart, token burn rate.
 
+📖 [Docs: Dashboard](https://tokentelemetry.com/docs/features/dashboard)
+
 ### Projects View
 
-Per-project heatmap, tool usage breakdown, agent leaderboard, session timeline.
+Per-project heatmap, tool usage breakdown, agent leaderboard, session timeline. Activity split across git worktrees rolls up under its parent repo.
+
+📖 [Docs: Projects](https://tokentelemetry.com/docs/features/projects)
 
 ### Budgets & Alerts
 
-Set a spend or token limit on any project — monthly, weekly, or rolling 30-day, overall and per agent. Budgets are **observational**: TokenTelemetry tracks this period's spend against your limit but never blocks an agent.
+Set a spend or token limit on any project — monthly, weekly, or rolling 30-day, overall and per agent. Budgets are **observational**: TokenTelemetry tracks this period's spend against your limit but never blocks an agent. Set one on the project's **Config** tab (dollars or tokens, a period, and alert thresholds — 80% and 100% by default). The project header and **Insights** tab show how close you are, colour-coded as spend climbs, and when spend crosses a threshold an alert lands in the notification center — the bell at the bottom of the sidebar.
 
-Set one on the project's **Config** tab — pick dollars or tokens, a period, and the alert thresholds (80% and 100% by default):
-
-![Setting a project budget](docs/images/budget-set.png)
-
-The project header and **Insights** tab show how close you are, colour-coded as spend climbs:
-
-![Budget usage on the Insights tab](docs/images/budget-usage.png)
-
-When spend crosses a threshold, an alert lands in the notification center — the bell at the bottom of the sidebar:
-
-![Budget alerts in the notification center](docs/images/budget-alerts.png)
+📖 [Docs: Budgets & Alerts](https://tokentelemetry.com/docs/features/budgets)
 
 ### Session Trace
 
 Full waterfall: system prompt → reasoning → tool calls → responses → final output. See exactly what your agent was thinking.
 
+📖 [Docs: Session traces](https://tokentelemetry.com/docs/features/traces)
+
 ### Analytics
 
 Cumulative token & cost graphs per agent/model over time. Compare efficiency across models.
+
+📖 [Docs: Analytics](https://tokentelemetry.com/docs/features/analytics)
 
 ### Plans
 
