@@ -6,6 +6,8 @@
     "title": "TokenTelemetry",
     "eyebrow": "Agent observability",
     "body": "Local read-only insight dashboard for Hermes sessions, token usage, tool traces, cron, skills, and memory.",
-    "ctaLabel": "Open telemetry"
+    "ctaLabel": "Open telemetry",
+    "imageSrc": "poster.png",
+    "imageAlt": "TokenTelemetry poster image"
   }
 }
