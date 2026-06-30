@@ -9,5 +9,10 @@
     "ctaLabel": "Open telemetry",
     "imageSrc": "poster.png",
     "imageAlt": "TokenTelemetry poster image"
+  },
+  "runtime": {
+    "type": "",
+    "health_path": "",
+    "start_command": []
   }
 }
